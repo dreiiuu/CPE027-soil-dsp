@@ -12,10 +12,12 @@
 #define LOW 0
 #define HIGH 1
 #define OUTPUT 1
+#define INPUT 0
 #define ADC_11db 3
 #define PROGMEM
 inline int g_relay_pin_state = -1;
-inline void digitalWrite(int pin, int v) { if (pin == 20) g_relay_pin_state = v; }
+inline int g_pin[64];   // last level written to each pin
+inline void digitalWrite(int pin, int v) { if (pin == 20) g_relay_pin_state = v; if (pin >= 0 && pin < 64) g_pin[pin] = v; }
 inline void pinMode(int, int) {}
 inline int g_adc[16] = {0};
 inline int analogRead(int pin) { return g_adc[pin]; }
@@ -24,6 +26,8 @@ inline void analogSetPinAttenuation(int, int) {}
 inline unsigned long g_ms = 0;
 inline unsigned long millis() { return g_ms; }
 inline void delay(unsigned long) {}
+inline void delayMicroseconds(unsigned) {}
+#define constrain(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
 
 class String {
  public:
@@ -51,12 +55,19 @@ template <class T> String operator+(const String& a, T v) { String r(a); r.s += 
 
 inline std::string g_serial_in;
 inline int g_relay = -1;
+inline bool g_serial_echo = false;
 struct HardwareSerial {
   void begin(int) {}
   int available() { return (int)g_serial_in.size(); }
   int read() { if (g_serial_in.empty()) return -1; int c = (unsigned char)g_serial_in[0]; g_serial_in.erase(0, 1); return c; }
-  void println(const char*) {}
-  void print(const char*) {}
+  // print/println are silent unless g_serial_echo is set (soil_dsp only uses printf for its CSV)
+  void print(const char* s) { if (g_serial_echo) fputs(s, stdout); }
+  void print(char c) { if (g_serial_echo) fputc(c, stdout); }
+  void print(int v) { if (g_serial_echo) printf("%d", v); }
+  void print(unsigned v) { if (g_serial_echo) printf("%u", v); }
+  void print(long v) { if (g_serial_echo) printf("%ld", v); }
+  void print(unsigned long v) { if (g_serial_echo) printf("%lu", v); }
+  void println(const char* s = "") { if (g_serial_echo) { fputs(s, stdout); fputc('\n', stdout); } }
   int printf(const char* f, ...) __attribute__((format(printf, 2, 3))) { va_list a; va_start(a, f); int n = vprintf(f, a); va_end(a); return n; }
 };
 static HardwareSerial Serial;

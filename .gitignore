@@ -8,3 +8,6 @@ firmware/soil_dsp/secrets.h
 # real measurement logs are tracked deliberately in data/runs/ (see docs/ITERATIONS.md); scratch logs are not
 data/*.csv
 .DS_Store
+# PC app session logs (copy the ones the report uses into data/runs/)
+software/logs/
+logs/

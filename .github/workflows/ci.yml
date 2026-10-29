@@ -26,6 +26,8 @@ jobs:
           arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@3.0.7   # version the firmware was verified against
-          arduino-cli lib install "Adafruit GFX Library" "Adafruit ST7735 and ST7789 Library"
+          arduino-cli lib install "Adafruit GFX Library" "Adafruit ST7735 and ST7789 Library" "Adafruit ILI9341"
       - name: Compile for ESP32-S3
-        run: arduino-cli compile --fqbn esp32:esp32:esp32s3 --warnings all firmware/soil_dsp
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32s3 --warnings all firmware/smart_irrigation
+          arduino-cli compile --fqbn esp32:esp32:esp32s3 --warnings all firmware/soil_dsp

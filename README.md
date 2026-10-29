@@ -8,11 +8,37 @@ CPE 027 DSP project: *Two-Stage Median and Exponential Smoothing of Multi-Sensor
                                   \-> M=10 moving average (comparison baseline, same input)
 ```
 
+## Current build (v1.0): start here
+
+The board on the bench follows `docs/handoff/Smart_Irrigation_DSP_Software_Handoff.md`: ILI9341 TFT, three
+v1.2 sensors on board labels 1/2/3, red LED on 5, relay on 6. Its firmware is
+**`firmware/smart_irrigation/smart_irrigation.ino`**, copied unchanged from the handoff. The sensor values reach
+the software UI over USB serial:
+
+```bash
+pip install -r software/requirements.txt
+```
+
+```bash
+cd software && python -m irrigation_ui --port COM7
+```
+
+Then open http://127.0.0.1:8765/ (add `--sim --sim-verified` instead of `--port` to try it without the board).
+Details: `software/README.md`. How the pieces connect, and the firmware/report mismatches to resolve:
+**`docs/INTEGRATION.md`**.
+
+The sections below, from "Hardware integration" to "First run", describe the **previous build**
+(`firmware/soil_dsp`: ST7789, relay on GPIO20, Wi-Fi dashboard). That firmware does not match the current board.
+The analysis tooling still applies: convert a session log with `software/to_analysis_csv.py` first.
+
 ## What is in the repo
 
 | Path | What it is |
 |---|---|
 | `firmware/soil_dsp/dsp.h` | The DSP core (calibration, median3, running median, EMA, moving average, pump controller, toggle counter). No Arduino dependencies. |
+| `firmware/smart_irrigation/smart_irrigation.ino` | **Current firmware** (from the handoff, unchanged): 3 sensors, 12x average + EMA, calibration, pump safety, ILI9341 TFT, JSONL telemetry over USB. |
+| `software/irrigation_ui/` | **Current software UI**: PC app that reads the serial telemetry. Live dashboard, alerts, CSV log, DSP comparison, confirmed commands, simulator. |
+| `docs/INTEGRATION.md` | How hardware, firmware and software connect, and the mismatches found. |
 | `firmware/soil_dsp/soil_dsp.ino` | ESP32-S3 firmware: samples 3 sensors, runs the pipeline, drives relay/TFT, serves the dashboard, logs CSV over serial. |
 | `firmware/soil_dsp/dashboard.h` | Web dashboard (raw vs smoothed plot, status word, 3 sensor readings, toggle counters, calibration, CSV download). |
 | `firmware/legacy_readout/` | Your original 3-sensor read-out sketch (iteration 0, kept for reference). |
@@ -24,7 +50,7 @@ CPE 027 DSP project: *Two-Stage Median and Exponential Smoothing of Multi-Sensor
 | `docs/PAPER_PATCHES.md` | Exact edits and fill-in mapping for the DSP report. |
 | `docs/ITERATIONS.md` | Iteration plan, milestones, branch model. `scripts/bootstrap_github.sh` creates the issues and milestones. |
 
-## Hardware integration
+## Hardware integration (previous build, `firmware/soil_dsp`)
 
 Wiring matches your Cirkit schematic and the working read-out sketch.
 
@@ -117,6 +143,9 @@ What has been verified, and what has not:
 | Compile for ESP32-S3 with the real Espressif toolchain (core 3.0.7, `--warnings all`) | pass, 0 warnings, 75% flash, 15% RAM |
 | Dashboard in Chromium (laptop and phone width), no JS errors, live update | pass (against a mock replay, `docs/img/`) |
 | Wiring check (fault flags, pin map in UI/serial) | pass in host simulation; **the prebuilt image predates it**, rebuild from source to get it |
+| PC app: parser, history, gap and reboot detection, alerts, commands, simulator, HTTP API, fed with the real `smart_irrigation.ino` output run on the PC (`make app-test`) | pass |
+| PC app in Chromium against the simulator, laptop and phone width (`make app-ui`) | pass |
+| `smart_irrigation.ino` compiled for ESP32-S3 by CI | runs on push to `main` or on a PR, not yet run |
 | Running on your board, sensors, relay, pump | **not yet: that is iteration v0.5** |
 
 `data/synthetic/` is **simulated**, only there so the pipeline and CI can run before you have measurements. Never quote numbers from it.

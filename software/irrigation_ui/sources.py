@@ -1,0 +1,387 @@
+"""Where telemetry lines come from: the real board over USB serial, a simulator, or a replayed log.
+
+Every source hands raw text lines to the same callback, so the simulator and replay exercise exactly
+the parser and dashboard code the real board does.
+"""
+from __future__ import annotations
+
+import random
+import threading
+import time
+from typing import Callable, Optional
+
+from .protocol import Telemetry, format_telemetry
+
+LineFn = Callable[[str], None]
+StatusFn = Callable[[str, str], None]   # (state, detail); state in connecting|connected|disconnected|finished
+
+# USB vendor IDs seen on ESP32-S3 dev boards: Espressif native USB, CP210x, CH340/CH343, FTDI
+KNOWN_VIDS = {0x303A: "Espressif USB", 0x10C4: "CP210x", 0x1A86: "CH34x", 0x0403: "FTDI"}
+
+
+class Source:
+    kind = "?"
+    synthetic = False
+
+    def __init__(self, on_line: LineFn, on_status: StatusFn):
+        self.on_line, self.on_status = on_line, on_status
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.port_name = ""
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"source-{self.kind}")
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=3)
+
+    def send(self, cmd: str) -> str:
+        raise NotImplementedError
+
+    def _run(self):
+        raise NotImplementedError
+
+
+# ------------------------------------------------------------------ real board
+def list_ports():
+    from serial.tools import list_ports as lp
+    return [(p.device, p.description, p.vid) for p in lp.comports()]
+
+
+def autodetect_port() -> Optional[str]:
+    try:
+        ports = list_ports()
+    except ImportError:
+        return None
+    cands = [d for d, _, vid in ports if vid in KNOWN_VIDS]
+    return cands[0] if len(cands) == 1 else None
+
+
+class SerialSource(Source):
+    kind = "serial"
+
+    def __init__(self, on_line, on_status, port: Optional[str], baud: int = 115200):
+        super().__init__(on_line, on_status)
+        self.port, self.baud = port, baud
+        self._ser = None
+        self._lock = threading.Lock()
+
+    def _open(self):
+        import serial  # pyserial; imported here so --sim works without it
+        port = self.port or autodetect_port()
+        if not port:
+            raise OSError("no port given and no single ESP32 USB port found (use --port, see --list-ports)")
+        s = serial.Serial(port, self.baud, timeout=1, write_timeout=1)
+        self.port_name = port
+        return s
+
+    def _run(self):
+        backoff = 1.0
+        while not self._stop.is_set():
+            if self._ser is None:
+                self.on_status("connecting", self.port or "auto-detect")
+                try:
+                    with self._lock:
+                        self._ser = self._open()
+                    self.on_status("connected", self.port_name)
+                    backoff = 1.0
+                except Exception as e:  # noqa: BLE001 - any open failure means "retry later"
+                    self.on_status("disconnected", str(e))
+                    self._stop.wait(backoff)
+                    backoff = min(backoff * 2, 8.0)
+                    continue
+            try:
+                data = self._ser.readline()
+            except Exception as e:  # noqa: BLE001 - unplugged cable, driver error
+                self.on_status("disconnected", f"{self.port_name}: {e}")
+                with self._lock:
+                    try:
+                        self._ser.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._ser = None
+                continue
+            if data:
+                self.on_line(data.decode("utf-8", errors="replace"))
+        with self._lock:
+            if self._ser is not None:
+                self._ser.close()
+
+    def send(self, cmd: str) -> str:
+        with self._lock:
+            if self._ser is None:
+                raise ConnectionError("board not connected")
+            self._ser.write(cmd.encode("ascii"))
+            self._ser.flush()
+        return "sent"
+
+
+# ------------------------------------------------------------------ simulator
+class FirmwareModel:
+    """Python port of the control logic in smart_irrigation.ino v1.0, driven by a toy soil model.
+
+    Same constants, same order of operations, same quirks (for example: with no calibration,
+    controlWatering() commands the pump OFF every sample). The soil model is invented: it only
+    exists so the dashboard has something plausible to show. All its output is SYNTHETIC.
+    """
+    START_WATERING_PCT, STOP_WATERING_PCT = 50, 70
+    PUMP_PULSE_MS, SOAK_INTERVAL_MS, MAX_PULSES = 1500, 20000, 3
+    MIN_CALIBRATION_SPAN_ADC, ADC_BAD_LOW, ADC_BAD_HIGH, EMA_ALPHA = 150, 10, 4085, 0.25
+
+    # invented sensor characteristics (counts in air / in water) for the soil model
+    AIR = [2950, 3380, 3400]
+    WATER = [1480, 1700, 1720]
+
+    def __init__(self, emit: LineFn, hardware_verified=False, calibrated=True, seed=None):
+        self.emit = emit
+        self.rng = random.Random(seed)
+        self.hw = hardware_verified
+        self.ms = 0
+        self.dry = list(self.AIR) if calibrated else [-1, -1, -1]
+        self.wet = list(self.WATER) if calibrated else [-1, -1, -1]
+        self.raw, self.filt, self.finit = [0, 0, 0], [0.0, 0.0, 0.0], False
+        self.fault = self.auto = self.pump = self.demand = self.lockout = self.led = False
+        self.led_test, self.led_test_ms = False, 0
+        self.pulses, self.pump_start, self.last_stop, self.last_sample = 0, 0, 0, 0
+        # soil model: "true" relative wetness per probe, water in transit from each pulse
+        self.m = [57.0, 55.0, 58.0]
+        self.gain = [1.1, 0.9, 1.0]
+        self.transit = []          # (arrival_ms, amount)
+        self.forced_fault = -1
+        self._booted = False
+
+    # --- firmware functions
+    def set_pump(self, on):
+        if on and not self.hw:
+            on = False
+        if on != self.pump:
+            if on:
+                self.pump_start = self.ms
+                self.emit("#EVENT pump_command_on")
+                self.transit.append((self.ms + 3000, 8.0))     # water reaches probes ~3 s later
+            else:
+                self.last_stop = self.ms
+                self.emit("#EVENT pump_command_off")
+            self.pump = on
+
+    def _counts(self, i):
+        if i == self.forced_fault:
+            return 0
+        c = self.AIR[i] - self.m[i] / 100.0 * (self.AIR[i] - self.WATER[i]) + self.rng.gauss(0, 4)
+        if self.rng.random() < 0.01:
+            c += self.rng.choice((-1, 1)) * 160                # occasional glitch
+        return max(0, min(4095, int(round(c))))
+
+    def sample(self):
+        for i in range(3):
+            self.raw[i] = self._counts(i)
+            self.filt[i] = self.raw[i] if not self.finit else self.filt[i] + self.EMA_ALPHA * (self.raw[i] - self.filt[i])
+        self.finit = True
+        self.fault = any(r <= self.ADC_BAD_LOW or r >= self.ADC_BAD_HIGH for r in self.raw)
+
+    def cal_valid(self):
+        return all(self.dry[i] >= 0 and self.wet[i] >= 0 and abs(self.dry[i] - self.wet[i]) >= self.MIN_CALIBRATION_SPAN_ADC
+                   for i in range(3))
+
+    def pct(self, i):
+        if not self.cal_valid() or self.fault:
+            return -1
+        p = 100.0 * (self.filt[i] - self.dry[i]) / float(self.wet[i] - self.dry[i])
+        return max(0, min(100, int(_c_lround(p))))
+
+    def avg(self):
+        if not self.cal_valid() or self.fault:
+            return -1
+        return (self.pct(0) + self.pct(1) + self.pct(2)) // 3
+
+    def capture(self, dry):
+        self.auto = self.demand = False
+        self.set_pump(False)
+        ref = self.AIR if dry else self.WATER     # simulated: as if the probes were really in air / water
+        measured = [int(round(ref[i] + self.rng.gauss(0, 3))) for i in range(3)]
+        for i in range(3):
+            (self.dry if dry else self.wet)[i] = measured[i]
+            self.raw[i] = measured[i]
+            self.filt[i] = float(measured[i])
+        self.finit, self.fault = True, False
+        self.emit("#EVENT dry_reference_saved" if dry else "#EVENT wet_reference_saved")
+        self.emit("#EVENT calibration_valid" if self.cal_valid() else "#EVENT calibration_incomplete_or_span_too_small")
+
+    def control(self):
+        if self.fault or not self.cal_valid():
+            self.auto = self.demand = False
+            self.set_pump(False)
+            return
+        p = self.avg()
+        if p < self.START_WATERING_PCT:
+            self.demand = True
+        if p >= self.STOP_WATERING_PCT:
+            self.demand = False
+            self.pulses = 0
+            self.set_pump(False)
+        if not self.auto or self.lockout or not self.demand or self.pump:
+            return
+        if self.pulses >= self.MAX_PULSES:
+            self.lockout, self.auto = True, False
+            self.set_pump(False)
+            self.emit("#EVENT safety_lockout_max_pulses")
+            return
+        if self.pulses == 0 or self.ms - self.last_stop >= self.SOAK_INTERVAL_MS:
+            self.set_pump(True)
+            if self.pump:
+                self.pulses += 1
+
+    def update_led(self):
+        self.led = self.led_test or (self.fault and (self.ms // 400) % 2 == 0) or (self.cal_valid() and self.demand)
+
+    def telemetry(self) -> Telemetry:
+        pcts = [self.pct(i) for i in range(3)]
+        a = self.avg()
+        return Telemetry(ms=self.ms, raw=list(self.raw), filtered_raw=[int(_c_lround(f)) for f in self.filt],
+                         moisture_pct=[None if p < 0 else p for p in pcts], average_pct=None if a < 0 else a,
+                         calibrated=self.cal_valid(), sensor_fault=self.fault, water_needed=self.demand,
+                         pump_commanded=self.pump, led_on=self.led, auto_mode=self.auto, lockout=self.lockout,
+                         pulses=self.pulses, hardware_verified=self.hw)
+
+    def command(self, c):
+        c = c.upper()
+        if c == "D":
+            self.capture(True)
+        elif c == "W":
+            self.capture(False)
+        elif c == "L":
+            self.led_test, self.led_test_ms = True, self.ms
+            self.emit("#EVENT led_test_2s")
+        elif c == "X":
+            self.set_pump(False)
+            self.auto = self.lockout = self.demand = False
+            self.pulses = 0
+            self.emit("#EVENT stopped_and_lockout_cleared")
+        elif c == "A":
+            if not self.hw:
+                self.emit("#EVENT auto_denied_check_NO_COM_and_trigger_polarity")
+            elif self.lockout:
+                self.emit("#EVENT auto_denied_lockout_send_X_then_review")
+            elif not self.cal_valid():
+                self.emit("#EVENT auto_denied_calibrate_D_then_W")
+            elif self.fault:
+                self.emit("#EVENT auto_denied_sensor_fault")
+            elif self.pump:
+                self.emit("#EVENT auto_denied_pump_busy")
+            else:
+                self.auto, self.demand, self.pulses = True, False, 0
+                self.emit("#EVENT auto_enabled")
+        elif c == "T":
+            if not self.hw or self.fault or self.auto or self.lockout:
+                self.emit("#EVENT manual_pump_test_denied")
+            else:
+                self.set_pump(True)
+                self.emit("#EVENT manual_pump_test_1p5s")
+        elif c == "?":
+            self.emit("#EVENT commands D=dry W=wet A=auto X=stop/reset L=LED T=pump ?=help")
+
+    # --- time
+    def _soil(self, dt_s):
+        for i in range(3):
+            self.m[i] = max(0.0, self.m[i] - 0.10 * dt_s)       # invented drying rate, fast enough to watch
+        keep = []
+        for arrive, amount in self.transit:
+            if self.ms >= arrive:
+                for i in range(3):
+                    self.m[i] = min(100.0, self.m[i] + amount * self.gain[i])
+            else:
+                keep.append((arrive, amount))
+        self.transit = keep
+
+    def boot(self):
+        self.emit("#EVENT SYNTHETIC_SIMULATOR (not a real board)")
+        self.emit("#EVENT esp32_s3_irrigation_boot_manual_mode")
+        self.emit("#EVENT led_startup_test_complete")
+        if not self.hw:
+            self.emit("#EVENT PUMP_DISABLED_UNTIL_HARDWARE_VERIFIED")
+        if not self.cal_valid():
+            self.emit("#EVENT calibration_needed_send_D_and_W")
+        self.last_sample = self.ms
+        self._booted = True
+
+    def advance(self, step_ms=100):
+        if not self._booted:
+            self.boot()
+        self.ms += step_ms
+        self._soil(step_ms / 1000.0)
+        if self.pump and self.ms - self.pump_start >= self.PUMP_PULSE_MS:
+            self.set_pump(False)
+        if self.led_test and self.ms - self.led_test_ms >= 2000:
+            self.led_test = False
+        if self.ms - self.last_sample >= 1000:
+            self.last_sample = self.ms
+            self.sample()
+            self.control()
+            self.update_led()
+            self.emit(format_telemetry(self.telemetry()))
+        else:
+            self.update_led()
+
+
+def _c_lround(x):
+    """C lroundf: halves away from zero (Python round() is banker's rounding)."""
+    import math
+    return int(math.floor(x + 0.5)) if x >= 0 else -int(math.floor(-x + 0.5))
+
+
+class SimSource(Source):
+    kind = "simulator"
+    synthetic = True
+
+    def __init__(self, on_line, on_status, speed=1.0, hardware_verified=False, calibrated=True, seed=None):
+        super().__init__(on_line, on_status)
+        self.speed = speed
+        self.model = FirmwareModel(on_line, hardware_verified=hardware_verified, calibrated=calibrated, seed=seed)
+        self._lock = threading.Lock()
+        self.port_name = "simulator"
+
+    def _run(self):
+        self.on_status("connected", "SYNTHETIC simulator")
+        step = 100
+        while not self._stop.is_set():
+            with self._lock:
+                self.model.advance(step)
+            self._stop.wait(step / 1000.0 / self.speed)
+
+    def send(self, cmd: str) -> str:
+        with self._lock:
+            if cmd == "F":                       # simulator only: toggle a disconnected-probe fault on S3
+                self.model.forced_fault = -1 if self.model.forced_fault == 2 else 2
+                return "simulated S3 fault " + ("on" if self.model.forced_fault == 2 else "off")
+            self.model.command(cmd)
+        return "sent"
+
+
+# ------------------------------------------------------------------ replay
+class ReplaySource(Source):
+    kind = "replay"
+
+    def __init__(self, on_line, on_status, path, speed=1.0, loop=False, synthetic=True):
+        super().__init__(on_line, on_status)
+        self.path, self.speed, self.loop, self.synthetic = path, speed, loop, synthetic
+        self.port_name = str(path)
+
+    def _run(self):
+        self.on_status("connected", f"replay of {self.path}")
+        while not self._stop.is_set():
+            with open(self.path, encoding="utf-8") as f:
+                for line in f:
+                    if self._stop.is_set():
+                        return
+                    self.on_line(line)
+                    if line.lstrip().startswith("{"):
+                        self._stop.wait(1.0 / self.speed)
+            if not self.loop:
+                self.on_status("finished", f"end of {self.path}")
+                return
+
+    def send(self, cmd: str) -> str:
+        raise ConnectionError("commands are disabled while replaying a log")

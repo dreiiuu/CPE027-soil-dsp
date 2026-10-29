@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smart Irrigation Monitor</title>
+<style>
+:root{--bg:#10150f;--card:#1a211a;--fg:#e8efe4;--mut:#93a08e;--g:#7fbf6a;--o:#e0a040;--b:#6fa8dc;--r:#e06c5a;--p:#c08fd8;--grid:#2a352a}
+*{box-sizing:border-box}
+body{margin:0 auto;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;padding:12px 16px;max-width:1100px}
+h1{font-size:18px;margin:4px 0 8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+h2{font-size:13px;color:var(--mut);font-weight:600;margin:0 0 6px;text-transform:uppercase;letter-spacing:.5px}
+.row{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+.card{background:var(--card);border:1px solid var(--grid);border-radius:10px;padding:10px 12px;flex:1 1 140px;min-width:0}
+.k{color:var(--mut);font-size:12px}.v{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}
+.pill{font-size:12px;padding:3px 8px;border-radius:99px;border:1px solid var(--grid);font-weight:600}
+.on{color:var(--g)}.off{color:var(--mut)}.bad{color:var(--r)}.warn{color:var(--o)}
+#banner{display:none;background:#3a2f12;border:1px solid var(--o);color:#ffd27a;border-radius:8px;padding:6px 10px;margin:6px 0;font-weight:600}
+#alerts div{padding:6px 10px;border-radius:8px;margin:4px 0;border-left:4px solid}
+#alerts .error{background:#2e1a18;border-color:var(--r)}#alerts .warn{background:#2c2614;border-color:var(--o)}#alerts .info{background:#182230;border-color:var(--b)}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+td,th{padding:4px 6px;border-bottom:1px solid var(--grid);text-align:right;white-space:nowrap}th{color:var(--mut);font-weight:600;font-size:12px}
+th:first-child,td:first-child{text-align:left}
+.scroll{overflow-x:auto}
+canvas{width:100%;height:260px;display:block;background:#141a13;border-radius:8px;margin-top:6px}
+.leg{font-size:12px;color:var(--mut);display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:4px}.sw{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:4px}
+button,select{background:#263326;color:var(--fg);border:1px solid #3a4a3a;border-radius:8px;padding:7px 10px;margin:3px 3px 3px 0;cursor:pointer;font:inherit}
+button:hover{background:#2f402f}button.risky{border-color:#6a4a2a}button:disabled{opacity:.45;cursor:not-allowed}
+#log{font:12px ui-monospace,monospace;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+#log .device{color:var(--fg)}#log .app{color:var(--b)}#log .operator{color:var(--o)}
+small{color:var(--mut);overflow-wrap:anywhere}
+</style></head><body>
+<h1>Smart Irrigation Monitor <span id="conn" class="pill">--</span> <small id="src"></small></h1>
+<div id="banner">SYNTHETIC DATA: this is a simulation or a synthetic log, not a measurement.</div>
+<div id="alerts"></div>
+
+<div class="row">
+  <div class="card"><div class="k">Average moisture (relative)</div><div class="v" id="avg">--</div><small id="thr"></small></div>
+  <div class="card"><div class="k">Water demand</div><div class="v" id="demand">--</div></div>
+  <div class="card"><div class="k">Pump (software command)</div><div class="v" id="pump">--</div><small>not a flow measurement</small></div>
+  <div class="card"><div class="k">Mode</div><div class="v" id="mode">--</div><small id="pulses"></small></div>
+  <div class="card"><div class="k">Red LED</div><div class="v" id="led">--</div><small id="hw"></small></div>
+</div>
+
+<div class="row"><div class="card">
+  <h2>Capacitive sensors</h2>
+  <div class="scroll"><table>
+    <tr><th>Sensor</th><th>Board pin</th><th>Raw ADC</th><th>Filtered (EMA 0.25)</th><th>Moisture</th><th>Noise SD</th><th>Glitches (5 min)</th><th>Drift /h</th></tr>
+    <tbody id="sens"></tbody>
+  </table></div>
+  <small>Raw = average of 12 ADC reads, 0-4095. Moisture = relative to your D (dry) and W (wet) references, 0-100%.</small>
+</div></div>
+
+<div class="row"><div class="card" style="flex-basis:100%">
+  <h2>Moisture trend <select id="win"><option value="120">2 min</option><option value="600" selected>10 min</option><option value="3600">60 min</option></select></h2>
+  <canvas id="c1"></canvas>
+  <div class="leg"><span><i class="sw" style="background:var(--g);height:4px"></i>average</span><span><i class="sw" style="background:#a9c3e8"></i>S1</span><span><i class="sw" style="background:#e8c3a9"></i>S2</span><span><i class="sw" style="background:#c3a9e8"></i>S3</span>
+  <span><i class="sw" style="background:var(--r)"></i>start threshold</span><span><i class="sw" style="background:var(--b)"></i>stop threshold</span><span><i class="sw" style="background:rgba(224,160,64,.35);height:10px"></i>pump commanded</span></div>
+</div></div>
+
+<div class="row"><div class="card" style="flex-basis:100%">
+  <h2>DSP comparison (display only, the ESP32 still controls the pump)</h2>
+  <select id="fs"><option value="0">S1</option><option value="1">S2</option><option value="2">S3</option></select>
+  <select id="fk"><option value="ma10">Moving average M=10</option><option value="ema10">EMA alpha 0.10</option><option value="med5ema">Median 5 + EMA 0.10</option><option value="ema25">EMA alpha 0.25 (firmware)</option></select>
+  <canvas id="c2"></canvas>
+  <div class="leg"><span><i class="sw" style="background:#7d877a"></i>raw</span><span><i class="sw" style="background:var(--o)"></i>firmware EMA</span><span><i class="sw" style="background:var(--p);height:4px"></i><span id="fname">dashboard filter</span></span><span><i class="sw" style="background:var(--r);height:8px;width:8px;border-radius:4px"></i>glitch (Hampel)</span></div>
+</div></div>
+
+<div class="row">
+  <div class="card" style="flex-basis:320px"><h2>Analysis</h2><div id="ana">--</div></div>
+  <div class="card" style="flex-basis:320px"><h2>Controls</h2>
+    <div id="btns"></div>
+    <small>D, W, A and T ask for confirmation. X always stops. The board enforces its own safety rules either way.</small>
+    <div id="cmdmsg" style="margin-top:6px"></div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="card" style="flex-basis:60%"><h2>Events</h2><div id="log"></div></div>
+  <div class="card"><h2>Session</h2><div id="stats"></div>
+    <button onclick="location.href='/api/export.csv'">Download CSV</button></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let S=null, H={seq:[],pc:[],ms:[],raw:[],filt:[],pct:[],avg:[],pump:[]}, F=null, lastSeq=0;
+const CONFIRM={
+ D:"Save the DRY reference?\n\nAll three probes must be in your dry reference soil, inserted to the line and left still.",
+ W:"Save the WET reference?\n\nAll three probes must be in your wet reference soil, inserted to the line and left still.",
+ A:"Enable AUTOMATIC watering?\n\nConfirm: relay wired COM->NO (NC unused), the pump stops when commanded OFF, the tube points into the tray, and someone is watching.",
+ T:"Run ONE 1.5 s pump pulse?\n\nConfirm the pump outlet is in the tray or a cup and someone is watching."};
+const LABEL={D:"Calibrate DRY (D)",W:"Calibrate WET (W)",A:"Enable AUTO (A)",X:"STOP / clear lockout (X)",L:"LED test (L)",T:"Pump pulse (T)","?":"Help (?)",F:"Sim: toggle S3 fault"};
+
+function fmt(v,d=0){return v==null?'--':(+v).toFixed(d)}
+function tstr(e){const d=new Date(e*1000);return d.toLocaleTimeString()}
+
+async function cmd(c){
+  let confirm=false;
+  if(S&&S.commands[c]&&S.commands[c].risky){if(!window.confirm(CONFIRM[c]))return;confirm=true}
+  try{const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:c,confirm})});
+    const j=await r.json();$('cmdmsg').textContent=(j.ok?'OK: ':'Refused: ')+j.msg;$('cmdmsg').className=j.ok?'on':'bad'}
+  catch(e){$('cmdmsg').textContent='Request failed: '+e;$('cmdmsg').className='bad'}
+}
+function buildButtons(){
+  const keys=['D','W','A','X','L','T','?'];if(S.conn.source==='simulator')keys.push('F');
+  $('btns').innerHTML='';
+  for(const k of keys){const b=document.createElement('button');b.textContent=LABEL[k];b.id='b'+(k==='?'?'Q':k);
+    if(S.commands[k]&&S.commands[k].risky)b.className='risky';b.onclick=()=>cmd(k);$('btns').appendChild(b)}
+}
+
+function render(){
+  const c=S.conn,t=S.t;
+  const live=c.state==='connected'&&c.last_rx_age_s!=null&&c.last_rx_age_s<3;
+  $('conn').textContent=live?'LIVE':(c.state==='connected'?'NO DATA':c.state.toUpperCase());
+  $('conn').className='pill '+(live?'on':'bad');
+  $('src').textContent=c.source+(c.port?' - '+c.port:'')+(S.pc_time?' - last record '+new Date(S.pc_time).toLocaleTimeString():'');
+  $('banner').style.display=c.synthetic?'block':'none';
+  $('alerts').innerHTML=S.alerts.filter(a=>a.code!=='synthetic').map(a=>`<div class="${a.level}">${a.text}</div>`).join('');
+  const th=S.thresholds;$('thr').textContent=`start below ${th.start_pct}%, stop at ${th.stop_pct}% (relative, not VWC)`;
+  if(!$('btns').childElementCount)buildButtons();
+  const rx=!!t&&live;
+  for(const k of ['A','T','D','W','L','Q']){const b=$('b'+k);if(b)b.disabled=c.source==='replay'||!rx}
+  const bx=$('bX');if(bx)bx.disabled=c.source==='replay';
+  if(!t){$('sens').innerHTML='<tr><td colspan="8">waiting for telemetry...</td></tr>';return}
+  $('avg').textContent=t.average_pct==null?(t.sensor_fault?'FAULT':'CAL REQ'):t.average_pct+'%';
+  $('avg').className='v '+(t.average_pct==null?'warn':(t.water_needed?'bad':'on'));
+  $('demand').textContent=t.water_needed?'YES':'no';$('demand').className='v '+(t.water_needed?'warn':'off');
+  $('pump').textContent=t.pump_commanded?'ON':'OFF';$('pump').className='v '+(t.pump_commanded?'on':'off');
+  $('mode').textContent=t.lockout?'LOCKOUT':(t.auto_mode?'AUTO':'MANUAL');$('mode').className='v '+(t.lockout?'bad':(t.auto_mode?'on':'off'));
+  $('pulses').textContent=`pulses this cycle: ${t.pulses}/3`;
+  $('led').textContent=t.led_on?'ON':'off';$('led').className='v '+(t.led_on?'bad':'off');
+  $('hw').textContent=t.hardware_verified?'pump hardware verified':'pump blocked: hardware not verified';$('hw').className=t.hardware_verified?'':'warn';
+  const A=S.analysis.sensors||{};
+  let rows='';for(let i=0;i<3;i++){const p=t.moisture_pct[i];
+    rows+=`<tr><td>S${i+1}</td><td>${i+1}</td><td>${t.raw[i]}</td><td>${t.filtered_raw[i]}</td><td class="${p==null?'warn':''}">${p==null?'--':p+'%'}</td>
+    <td>${fmt(A.noise_sd&&A.noise_sd[i],1)}</td><td>${A.spikes_recent?A.spikes_recent[i]:'--'}</td><td>${A.drift_counts_per_h&&A.drift_counts_per_h[i]!=null?A.drift_counts_per_h[i]:'--'}</td></tr>`}
+  $('sens').innerHTML=rows;
+  const an=S.analysis;let h='';
+  h+=`<div>Drying rate (last 10 min, pump idle): <b>${an.drying_pct_per_h==null?'not enough data':an.drying_pct_per_h+' %/h'}</b></div>`;
+  h+=`<div>Probe spread now: <b>${A.spread_pct==null?'--':A.spread_pct+' points'}</b></div>`;
+  if(an.pulse_responses&&an.pulse_responses.length){h+='<div style="margin-top:6px">Reading response after pump pulses:</div><div class="scroll"><table>';
+    for(const r of an.pulse_responses)h+=`<tr><td>${(r.t).toFixed(0)} s uptime</td><td>from ${r.base_pct}%</td><td>${r.lag_s==null?'no rise within 60 s':'+2 points after '+r.lag_s.toFixed(0)+' s'}</td></tr>`;h+='</table></div>'}
+  for(const w of (A.warnings||[]))h+=`<div class="warn" style="margin-top:6px">${w}</div>`;
+  h+=`<small>${an.note||''}</small>`;$('ana').innerHTML=h;
+  const st=S.stats;$('stats').innerHTML=`<table><tr><td>Records</td><td>${st.records||0}</td></tr><tr><td>Missing records</td><td>${st.missing_records||0}</td></tr>
+   <tr><td>Rejected lines</td><td>${st.bad_lines||0}</td></tr><tr><td>Board restarts seen</td><td>${st.device_restarts||0}</td></tr>
+   <tr><td>Device uptime</td><td>${(t.ms/1000).toFixed(0)} s</td></tr></table><small>${S.log_file?'Log: '+S.log_file:'Logging off'}</small>`;
+  const L=$('log'),atEnd=L.scrollTop+L.clientHeight>=L.scrollHeight-5;
+  L.innerHTML=S.events.map(e=>`<div class="${e.origin}">${tstr(e.pc_time)}  [${e.origin}] ${e.text.replace(/</g,'&lt;')}</div>`).join('');
+  if(atEnd)L.scrollTop=L.scrollHeight;
+}
+
+function plot(cv,opt){
+  const dpr=window.devicePixelRatio||1,W=cv.clientWidth,Hh=cv.clientHeight;
+  if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(Hh*dpr)){cv.width=Math.round(W*dpr);cv.height=Math.round(Hh*dpr)}
+  const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,Hh);
+  const L=40,R=8,T=8,B=20,n=opt.x.length;
+  g.font='11px system-ui';g.fillStyle='#93a08e';
+  if(n<2){g.fillText('waiting for data...',L,Hh/2);return}
+  let lo=opt.lo,hi=opt.hi;
+  if(lo==null){const v=[];for(const s of opt.series)for(const y of s.y)if(y!=null)v.push(y);
+    if(!v.length){g.fillText(opt.empty||'no values yet',L,Hh/2);return}
+    lo=Math.min(...v);hi=Math.max(...v);const pad=Math.max(5,(hi-lo)*.1);lo=Math.floor(lo-pad);hi=Math.ceil(hi+pad)}
+  const x0=opt.x[0],x1=opt.x[n-1]||x0+1,X=x=>L+(W-L-R)*(x-x0)/Math.max(1e-9,x1-x0),Y=y=>T+(Hh-T-B)*(1-(y-lo)/(hi-lo));
+  if(opt.bands){g.fillStyle='rgba(224,160,64,.25)';for(let i=0;i<n;i++)if(opt.bands[i]){const xa=X(opt.x[i]),xb=i+1<n?X(opt.x[i+1]):xa+2;g.fillRect(xa,T,Math.max(2,xb-xa),Hh-T-B)}}
+  g.strokeStyle='#2a352a';g.lineWidth=1;g.fillStyle='#93a08e';
+  for(let k=0;k<=4;k++){const v=lo+(hi-lo)*k/4,y=Y(v);g.beginPath();g.moveTo(L,y);g.lineTo(W-R,y);g.stroke();g.fillText(v.toFixed(0),4,y+4)}
+  g.fillText(tstr(x0),L,Hh-5);g.textAlign='right';g.fillText(tstr(x1),W-R,Hh-5);g.textAlign='left';
+  for(const h of (opt.hlines||[])){if(h.v<lo||h.v>hi)continue;g.strokeStyle=h.c;g.setLineDash([6,4]);g.beginPath();g.moveTo(L,Y(h.v));g.lineTo(W-R,Y(h.v));g.stroke();g.setLineDash([])}
+  for(const s of opt.series){g.strokeStyle=s.c;g.lineWidth=s.w||1.2;g.beginPath();let pen=false;
+    for(let i=0;i<n;i++){const y=s.y[i];if(y==null){pen=false;continue}const px=X(opt.x[i]),py=Y(y);pen?g.lineTo(px,py):g.moveTo(px,py);pen=true}g.stroke()}
+  if(opt.dots){g.fillStyle='#e06c5a';for(const d of opt.dots){g.beginPath();g.arc(X(d.x),Y(d.y),3.5,0,7);g.fill()}}
+}
+
+function draw(){
+  const win=+$('win').value,n=H.pc.length;if(!S)return;
+  let i0=0;while(i0<n&&H.pc[n-1]-H.pc[i0]>win)i0++;
+  const sl=a=>a.slice(i0);const pct=sl(H.pct);
+  plot($('c1'),{x:sl(H.pc),lo:0,hi:100,bands:sl(H.pump),empty:'no calibrated percentages yet (send D then W)',
+    hlines:[{v:S.thresholds.start_pct,c:'#e06c5a'},{v:S.thresholds.stop_pct,c:'#6fa8dc'}],
+    series:[{y:pct.map(p=>p[0]),c:'#a9c3e8',w:1},{y:pct.map(p=>p[1]),c:'#e8c3a9',w:1},{y:pct.map(p=>p[2]),c:'#c3a9e8',w:1},{y:sl(H.avg),c:'#7fbf6a',w:2.4}]});
+  if(F){const m=new Map(H.seq.map((s,i)=>[s,H.pc[i]]));const xs=F.seq.map(s=>m.get(s));let j0=0;while(j0<xs.length&&(xs[j0]==null||xs[xs.length-1]-xs[j0]>win))j0++;
+    const fs=a=>a.slice(j0),sp=new Set(F.spikes),dots=[];for(let j=j0;j<F.seq.length;j++)if(sp.has(F.seq[j]))dots.push({x:xs[j],y:F.raw[j]});
+    $('fname').textContent=F.name;
+    plot($('c2'),{x:fs(xs),series:[{y:fs(F.raw),c:'#7d877a',w:1},{y:fs(F.firmware),c:'#e0a040',w:1.4},{y:fs(F.dashboard),c:'#c08fd8',w:2.4}],dots})}
+}
+
+async function pollState(){try{S=await (await fetch('/api/state')).json();render()}catch(e){$('conn').textContent='APP OFFLINE';$('conn').className='pill bad'}}
+async function pollHist(){try{const h=await (await fetch('/api/history?since='+lastSeq)).json();
+  for(const k in H)H[k].push(...h[k]);if(h.seq.length)lastSeq=h.seq[h.seq.length-1];
+  const over=H.seq.length-3600;if(over>0)for(const k in H)H[k].splice(0,over)}catch(e){}}
+async function pollF(){try{F=await (await fetch(`/api/filtered?sensor=${$('fs').value}&kind=${$('fk').value}`)).json()}catch(e){}}
+async function tick(){await Promise.all([pollState(),pollHist()]);draw()}
+$('fs').onchange=$('fk').onchange=()=>pollF().then(draw);$('win').onchange=draw;window.addEventListener('resize',draw);
+tick();pollF();setInterval(tick,1000);setInterval(()=>pollF().then(draw),2000);
+</script></body></html>

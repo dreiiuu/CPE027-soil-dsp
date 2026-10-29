@@ -1,11 +1,11 @@
-.PHONY: test unit sim synth crosscheck firmware-check dashboard clean
+.PHONY: test unit sim synth crosscheck firmware-check app-test app-ui dashboard clean
 
 PY ?= python3
 CXX ?= g++
 STUBS = tests/arduino_stubs
 FW = firmware/soil_dsp
 
-test: unit sim synth crosscheck firmware-check
+test: unit sim synth crosscheck firmware-check app-test
 	@echo "ALL CHECKS PASSED"
 
 build:
@@ -33,6 +33,17 @@ synth: build
 crosscheck: build
 	$(PY) analysis/crosscheck.py --log data/synthetic/synthetic_steady.csv --cal data/synthetic/calibration.json
 	$(PY) analysis/crosscheck.py --log data/synthetic/synthetic_pump.csv   --cal data/synthetic/calibration.json
+
+# Smart-irrigation firmware run on the PC (real .ino, stubbed hardware) -> its serial output -> PC app tests
+app-test: build
+	$(CXX) -std=gnu++17 -O1 -Wall -Wextra -include Arduino.h -I $(STUBS) tests/fw_host_run.cpp -o build/fw_host_run
+	./build/fw_host_run > build/fw_serial.txt
+	$(PY) tests/test_irrigation_ui.py build/fw_serial.txt
+
+# Optional (needs node + playwright): the PC app against its simulator, in Chromium
+app-ui: build
+	cd software && $(PY) -m irrigation_ui --sim --sim-verified --speed 3 --http-port 8766 --no-browser --log-dir ../build/applogs > ../build/app.log 2>&1 & echo $$! > build/app.pid; sleep 2; \
+	node tests/app_check.js http://127.0.0.1:8766/ build; rc=$$?; kill `cat build/app.pid`; exit $$rc
 
 # Optional (needs node + playwright): serve the real dashboard page with a replayed log and check it in Chromium
 dashboard: build
