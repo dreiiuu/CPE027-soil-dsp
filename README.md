@@ -12,8 +12,9 @@ CPE 027 DSP project: *Two-Stage Median and Exponential Smoothing of Multi-Sensor
 
 The board on the bench follows `docs/handoff/Smart_Irrigation_DSP_Software_Handoff.md`: ILI9341 TFT, three
 v1.2 sensors on board labels 1/2/3, red LED on 5, relay on 6. Its firmware is
-**`firmware/smart_irrigation/smart_irrigation.ino`**, copied unchanged from the handoff. The sensor values reach
-the software UI over USB serial:
+**`firmware/smart_irrigation/smart_irrigation.ino`** v2.0: automatic watering per the v2 handoff, plus calibration
+from typed raw values (`$CAL`) and a bench test input (`$RAW`). The pump stays blocked until you set
+`PUMP_HARDWARE_VERIFIED=true`. The sensor values reach the software UI over USB serial:
 
 ```bash
 pip install -r software/requirements.txt
@@ -36,7 +37,7 @@ The analysis tooling still applies: convert a session log with `software/to_anal
 | Path | What it is |
 |---|---|
 | `firmware/soil_dsp/dsp.h` | The DSP core (calibration, median3, running median, EMA, moving average, pump controller, toggle counter). No Arduino dependencies. |
-| `firmware/smart_irrigation/smart_irrigation.ino` | **Current firmware** (from the handoff, unchanged): 3 sensors, 12x average + EMA, calibration, pump safety, ILI9341 TFT, JSONL telemetry over USB. |
+| `firmware/smart_irrigation/smart_irrigation.ino` | **Current firmware** v2.0: 3 sensors, 12x average + EMA, calibration (D/W or `$CAL`), automatic watering with pause/lockout kept in NVS, `$RAW` bench test, ILI9341 TFT, JSONL telemetry over USB. |
 | `software/irrigation_ui/` | **Current software UI**: PC app that reads the serial telemetry. Live dashboard, alerts, CSV log, DSP comparison, confirmed commands, simulator. |
 | `docs/INTEGRATION.md` | How hardware, firmware and software connect, and the mismatches found. |
 | `firmware/soil_dsp/soil_dsp.ino` | ESP32-S3 firmware: samples 3 sensors, runs the pipeline, drives relay/TFT, serves the dashboard, logs CSV over serial. |

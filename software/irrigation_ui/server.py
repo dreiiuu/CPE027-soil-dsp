@@ -6,6 +6,8 @@ GET  /api/history?since=SEQ           samples after SEQ (incremental polling)
 GET  /api/filtered?sensor=0&kind=ma10 raw vs firmware EMA vs a dashboard-side filter
 GET  /api/export.csv   this session's CSV log
 POST /api/command      JSON {"cmd": "D", "confirm": true}; risky commands need confirm=true
+                       {"cmd": "CAL", "values": [d1,d2,d3,w1,w2,w3], "confirm": true}
+                       {"cmd": "RAW", "values": [r1,r2,r3], "confirm": true}   {"cmd": "RAW_OFF"}
 """
 from __future__ import annotations
 
@@ -74,7 +76,7 @@ def make_server(station: Station, host: str, port: int) -> ThreadingHTTPServer:
             try:
                 n = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(n) or b"{}")
-                ok, msg = station.command(str(body.get("cmd", "")), body.get("confirm") is True)
+                ok, msg = station.command(str(body.get("cmd", "")), body.get("confirm") is True, body.get("values"))
             except (ValueError, json.JSONDecodeError) as e:
                 ok, msg = False, f"bad request: {e}"
             self._send(200 if ok else 400, {"ok": ok, "msg": msg})

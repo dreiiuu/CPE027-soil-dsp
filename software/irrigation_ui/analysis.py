@@ -122,6 +122,42 @@ def pulse_responses(t_s, avg_pct, pump, rise: float = 2.0, max_wait_s: float = 6
     return out
 
 
+# ------------------------------------------------------------------ calibration assistant
+def reference_candidate(filt: Sequence[Sequence[int]], window: int = 30, max_sd: float = 15.0,
+                        max_range: float = 40.0) -> dict:
+    """Proposed raw reference per sensor = median of the firmware-filtered counts over the last
+    `window` samples, plus whether the probes have settled (low noise and range). The operator
+    decides whether the probes were in dry or wet soil; this only says what they read and how steadily."""
+    out = {"value": [None] * 3, "sd": [None] * 3, "range": [None] * 3, "stable": False, "n": 0}
+    rows = list(filt[-window:])
+    if len(rows) < 10:
+        return out
+    out["n"] = len(rows)
+    ok = True
+    for i in range(3):
+        col = [r[i] for r in rows]
+        out["value"][i] = int(round(statistics.median(col)))
+        out["sd"][i] = round(statistics.pstdev(col), 1)
+        out["range"][i] = max(col) - min(col)
+        ok = ok and out["sd"][i] <= max_sd and out["range"][i] <= max_range
+    out["stable"] = ok and len(rows) >= window
+    return out
+
+
+def percent(raw: float, dry: float, wet: float) -> Optional[int]:
+    """The firmware's sensorPercent(): clamp(round(100*(raw-dry)/(wet-dry)), 0, 100)."""
+    if dry is None or wet is None or dry < 0 or wet < 0 or abs(dry - wet) < 150:
+        return None
+    p = 100.0 * (raw - dry) / (wet - dry)
+    p = int(p + 0.5) if p >= 0 else -int(-p + 0.5)
+    return max(0, min(100, p))
+
+
+def raw_for_percent(pct: float, dry: float, wet: float) -> int:
+    """Inverse of percent(): the raw count that reads as `pct` (for $RAW bench tests)."""
+    return int(round(dry + pct / 100.0 * (wet - dry)))
+
+
 # ------------------------------------------------------------------ health / calibration quality
 def sensor_report(raw: Sequence[Sequence[int]], pct: Sequence[Sequence[Optional[int]]], t_s, pump) -> dict:
     """raw / pct are per-sample triples. Uses the last 60 samples for noise, the last 10 min for drift."""

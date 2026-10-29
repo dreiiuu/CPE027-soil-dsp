@@ -121,15 +121,17 @@ class SerialSource(Source):
 
 # ------------------------------------------------------------------ simulator
 class FirmwareModel:
-    """Python port of the control logic in smart_irrigation.ino v1.0, driven by a toy soil model.
+    """Python port of the control logic in smart_irrigation.ino v2.0, driven by a toy soil model.
 
-    Same constants, same order of operations, same quirks (for example: with no calibration,
-    controlWatering() commands the pump OFF every sample). The soil model is invented: it only
+    Same constants, same order of operations. tests/test_irrigation_ui.py replays the scenario of
+    the real firmware's PC build through it and compares. The soil model is invented: it only
     exists so the dashboard has something plausible to show. All its output is SYNTHETIC.
     """
     START_WATERING_PCT, STOP_WATERING_PCT = 50, 70
-    PUMP_PULSE_MS, SOAK_INTERVAL_MS, MAX_PULSES = 1500, 20000, 3
+    PUMP_PULSE_MS, SOAK_INTERVAL_MS, BOOT_SETTLE_MS, MAX_PULSES = 1500, 20000, 5000, 3
+    TEST_INPUT_MAX_MS = 300000
     MIN_CALIBRATION_SPAN_ADC, ADC_BAD_LOW, ADC_BAD_HIGH, EMA_ALPHA = 150, 10, 4085, 0.25
+    AUTO_START_AFTER_CALIBRATION = True
 
     # invented sensor characteristics (counts in air / in water) for the soil model
     AIR = [2950, 3380, 3400]
@@ -143,9 +145,11 @@ class FirmwareModel:
         self.dry = list(self.AIR) if calibrated else [-1, -1, -1]
         self.wet = list(self.WATER) if calibrated else [-1, -1, -1]
         self.raw, self.filt, self.finit = [0, 0, 0], [0.0, 0.0, 0.0], False
-        self.fault = self.auto = self.pump = self.demand = self.lockout = self.led = False
+        self.fault = self.auto = self.pump = self.manual = self.demand = self.led = False
+        self.paused = self.lockout = False            # "NVS"
         self.led_test, self.led_test_ms = False, 0
-        self.pulses, self.pump_start, self.last_stop, self.last_sample = 0, 0, 0, 0
+        self.test, self.test_raw, self.test_ms = False, [0, 0, 0], 0
+        self.pulses, self.pump_start, self.last_stop, self.last_sample, self.boot_ms = 0, 0, 0, 0, 0
         # soil model: "true" relative wetness per probe, water in transit from each pulse
         self.m = [57.0, 55.0, 58.0]
         self.gain = [1.1, 0.9, 1.0]
@@ -164,8 +168,14 @@ class FirmwareModel:
                 self.transit.append((self.ms + 3000, 8.0))     # water reaches probes ~3 s later
             else:
                 self.last_stop = self.ms
+                self.manual = False
                 self.emit("#EVENT pump_command_off")
             self.pump = on
+
+    def set_paused(self, p, why):
+        if p != self.paused:
+            self.paused = p
+            self.emit(("#EVENT auto_paused_" if p else "#EVENT auto_resumed_") + why)
 
     def _counts(self, i):
         if i == self.forced_fault:
@@ -177,7 +187,7 @@ class FirmwareModel:
 
     def sample(self):
         for i in range(3):
-            self.raw[i] = self._counts(i)
+            self.raw[i] = self.test_raw[i] if self.test else self._counts(i)
             self.filt[i] = self.raw[i] if not self.finit else self.filt[i] + self.EMA_ALPHA * (self.raw[i] - self.filt[i])
         self.finit = True
         self.fault = any(r <= self.ADC_BAD_LOW or r >= self.ADC_BAD_HIGH for r in self.raw)
@@ -197,23 +207,58 @@ class FirmwareModel:
             return -1
         return (self.pct(0) + self.pct(1) + self.pct(2)) // 3
 
+    def auto_allowed(self):
+        return (self.AUTO_START_AFTER_CALIBRATION and self.hw and self.cal_valid() and not self.fault
+                and not self.paused and not self.lockout)
+
+    def print_cal(self):
+        self.emit("#EVENT calibration dry=%s wet=%s %s" % (",".join(map(str, self.dry)), ",".join(map(str, self.wet)),
+                                                          "valid" if self.cal_valid() else "invalid"))
+
+    def store_cal(self, dry, wet):
+        if dry:
+            self.dry = list(dry)
+        if wet:
+            self.wet = list(wet)
+        self.pulses = 0
+        self.emit("#EVENT calibration_valid" if self.cal_valid() else "#EVENT calibration_incomplete_or_span_too_small")
+        self.print_cal()
+        if wet and self.cal_valid():
+            self.lockout = False
+            self.set_paused(False, "after_wet_calibration")
+            self.boot_ms = self.ms                    # settleFromMs in the .ino
+            self.auto = self.auto_allowed()
+            if self.auto:
+                self.emit("#EVENT auto_enabled")
+        else:
+            self.set_paused(True, "for_calibration")
+
     def capture(self, dry):
         self.auto = self.demand = False
         self.set_pump(False)
-        ref = self.AIR if dry else self.WATER     # simulated: as if the probes were really in air / water
+        ref = self.AIR if dry else self.WATER     # simulated: as if the probes were really in dry / wet soil
         measured = [int(round(ref[i] + self.rng.gauss(0, 3))) for i in range(3)]
-        for i in range(3):
-            (self.dry if dry else self.wet)[i] = measured[i]
-            self.raw[i] = measured[i]
-            self.filt[i] = float(measured[i])
-        self.finit, self.fault = True, False
+        if not self.test:
+            for i in range(3):
+                self.raw[i] = measured[i]
+                self.filt[i] = float(measured[i])
+            self.finit, self.fault = True, False
         self.emit("#EVENT dry_reference_saved" if dry else "#EVENT wet_reference_saved")
-        self.emit("#EVENT calibration_valid" if self.cal_valid() else "#EVENT calibration_incomplete_or_span_too_small")
+        self.store_cal(measured if dry else None, None if dry else measured)
 
     def control(self):
-        if self.fault or not self.cal_valid():
+        if self.fault:
+            if self.auto:
+                self.emit("#EVENT auto_stopped_sensor_fault")
             self.auto = self.demand = False
             self.set_pump(False)
+            if self.cal_valid():
+                self.set_paused(True, "sensor_fault")
+            return
+        if not self.cal_valid():
+            self.auto = self.demand = False
+            if not self.manual:
+                self.set_pump(False)
             return
         p = self.avg()
         if p < self.START_WATERING_PCT:
@@ -221,18 +266,25 @@ class FirmwareModel:
         if p >= self.STOP_WATERING_PCT:
             self.demand = False
             self.pulses = 0
-            self.set_pump(False)
+            if not self.manual:
+                self.set_pump(False)
+        if not self.auto and self.auto_allowed():
+            self.auto = True
+            self.emit("#EVENT auto_enabled")
         if not self.auto or self.lockout or not self.demand or self.pump:
+            return
+        if self.ms - self.boot_ms < self.BOOT_SETTLE_MS:
+            return
+        if not (self.pulses == 0 or self.ms - self.last_stop >= self.SOAK_INTERVAL_MS):
             return
         if self.pulses >= self.MAX_PULSES:
             self.lockout, self.auto = True, False
             self.set_pump(False)
             self.emit("#EVENT safety_lockout_max_pulses")
             return
-        if self.pulses == 0 or self.ms - self.last_stop >= self.SOAK_INTERVAL_MS:
-            self.set_pump(True)
-            if self.pump:
-                self.pulses += 1
+        self.set_pump(True)
+        if self.pump:
+            self.pulses += 1
 
     def update_led(self):
         self.led = self.led_test or (self.fault and (self.ms // 400) % 2 == 0) or (self.cal_valid() and self.demand)
@@ -240,13 +292,60 @@ class FirmwareModel:
     def telemetry(self) -> Telemetry:
         pcts = [self.pct(i) for i in range(3)]
         a = self.avg()
+        ref = lambda r: [None if v < 0 else v for v in r]
         return Telemetry(ms=self.ms, raw=list(self.raw), filtered_raw=[int(_c_lround(f)) for f in self.filt],
                          moisture_pct=[None if p < 0 else p for p in pcts], average_pct=None if a < 0 else a,
                          calibrated=self.cal_valid(), sensor_fault=self.fault, water_needed=self.demand,
                          pump_commanded=self.pump, led_on=self.led, auto_mode=self.auto, lockout=self.lockout,
-                         pulses=self.pulses, hardware_verified=self.hw)
+                         pulses=self.pulses, hardware_verified=self.hw, paused=self.paused, test_input=self.test,
+                         dry_ref=ref(self.dry), wet_ref=ref(self.wet))
+
+    def end_test(self, why):
+        if self.test:
+            self.test, self.finit = False, False
+            self.emit("#EVENT test_input_off_" + why)
+
+    def line(self, text):
+        """A $-command, text without the '$' and the newline (as handleLine() receives it)."""
+        text = text.upper()
+        parts = text.split()
+        if text.startswith("CAL "):
+            try:
+                v = [int(x) for x in parts[1:]]
+                assert len(v) == 6 and all(0 <= x <= 4095 for x in v)
+            except (ValueError, AssertionError):
+                self.emit("#EVENT cal_rejected_need_6_values_0_4095")
+                return
+            for i in range(3):
+                if not all(self.ADC_BAD_LOW < x < self.ADC_BAD_HIGH for x in (v[i], v[i + 3])) or \
+                        abs(v[i] - v[i + 3]) < self.MIN_CALIBRATION_SPAN_ADC:
+                    self.emit("#EVENT cal_rejected_rail_value_or_span_below_150")
+                    return
+            self.auto = self.demand = False
+            self.set_pump(False)
+            self.emit("#EVENT calibration_set_from_values")
+            self.store_cal(v[:3], v[3:])
+        elif text == "RAW OFF":
+            self.end_test("by_command")
+        elif text.startswith("RAW "):
+            try:
+                v = [int(x) for x in parts[1:]]
+                assert len(v) == 3 and all(0 <= x <= 4095 for x in v)
+            except (ValueError, AssertionError):
+                self.emit("#EVENT raw_rejected_need_3_values_0_4095")
+                return
+            self.test_raw = v
+            if not self.test:
+                self.finit = False
+            self.test, self.test_ms = True, self.ms
+            self.emit("#EVENT test_input_on")
+        else:
+            self.emit("#EVENT unknown_line_command")
 
     def command(self, c):
+        if c.startswith("$"):
+            self.line(c[1:].strip())
+            return
         c = c.upper()
         if c == "D":
             self.capture(True)
@@ -258,7 +357,9 @@ class FirmwareModel:
         elif c == "X":
             self.set_pump(False)
             self.auto = self.lockout = self.demand = False
+            self.set_paused(True, "by_X")
             self.pulses = 0
+            self.end_test("by_X")
             self.emit("#EVENT stopped_and_lockout_cleared")
         elif c == "A":
             if not self.hw:
@@ -272,16 +373,20 @@ class FirmwareModel:
             elif self.pump:
                 self.emit("#EVENT auto_denied_pump_busy")
             else:
+                self.set_paused(False, "by_A")
                 self.auto, self.demand, self.pulses = True, False, 0
                 self.emit("#EVENT auto_enabled")
         elif c == "T":
-            if not self.hw or self.fault or self.auto or self.lockout:
+            if not self.hw or self.fault or self.auto or self.lockout or self.pump:
                 self.emit("#EVENT manual_pump_test_denied")
             else:
+                self.manual = True
                 self.set_pump(True)
                 self.emit("#EVENT manual_pump_test_1p5s")
         elif c == "?":
-            self.emit("#EVENT commands D=dry W=wet A=auto X=stop/reset L=LED T=pump ?=help")
+            self.emit("#EVENT commands D=dry W=wet A=auto X=stop/pause L=LED T=pump ?=help | "
+                      "$CAL d1 d2 d3 w1 w2 w3 | $RAW r1 r2 r3 | $RAW OFF")
+            self.print_cal()
 
     # --- time
     def _soil(self, dt_s):
@@ -298,12 +403,19 @@ class FirmwareModel:
 
     def boot(self):
         self.emit("#EVENT SYNTHETIC_SIMULATOR (not a real board)")
-        self.emit("#EVENT esp32_s3_irrigation_boot_manual_mode")
+        self.boot_ms = self.ms
+        self.sample()
+        self.auto = self.auto_allowed()
+        self.emit("#EVENT esp32_s3_irrigation_v2_boot")
         self.emit("#EVENT led_startup_test_complete")
         if not self.hw:
             self.emit("#EVENT PUMP_DISABLED_UNTIL_HARDWARE_VERIFIED")
         if not self.cal_valid():
             self.emit("#EVENT calibration_needed_send_D_and_W")
+        if self.paused:
+            self.emit("#EVENT auto_paused_send_A_to_resume")
+        if self.auto:
+            self.emit("#EVENT auto_enabled_at_boot")
         self.last_sample = self.ms
         self._booted = True
 
@@ -316,6 +428,8 @@ class FirmwareModel:
             self.set_pump(False)
         if self.led_test and self.ms - self.led_test_ms >= 2000:
             self.led_test = False
+        if self.test and self.ms - self.test_ms >= self.TEST_INPUT_MAX_MS:
+            self.end_test("timeout")
         if self.ms - self.last_sample >= 1000:
             self.last_sample = self.ms
             self.sample()
@@ -353,6 +467,7 @@ class SimSource(Source):
 
     def send(self, cmd: str) -> str:
         with self._lock:
+            cmd = cmd.strip()
             if cmd == "F":                       # simulator only: toggle a disconnected-probe fault on S3
                 self.model.forced_fault = -1 if self.model.forced_fault == 2 else 2
                 return "simulated S3 fault " + ("on" if self.model.forced_fault == 2 else "off")

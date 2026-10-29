@@ -13,14 +13,15 @@ from pathlib import Path
 from typing import Optional
 
 from . import analysis
-from .protocol import COMMANDS, RISKY_COMMANDS, Telemetry, parse_line
+from .protocol import COMMANDS, RISKY_COMMANDS, Telemetry, command_line, parse_line
 
 STALE_S = 3.0           # no telemetry for this long while "connected" = no data
 HISTORY = 3600          # samples kept in memory (1 h at 1 Hz); the CSV keeps everything
 
 CSV_COLUMNS = ["pc_time", "pc_epoch_s", "source", "ms", "raw1", "raw2", "raw3", "filt1", "filt2", "filt3",
                "pct1", "pct2", "pct3", "average_pct", "calibrated", "sensor_fault", "water_needed",
-               "pump_commanded", "led_on", "auto_mode", "lockout", "pulses", "hardware_verified", "missing_before"]
+               "pump_commanded", "led_on", "auto_mode", "lockout", "pulses", "hardware_verified", "paused",
+               "test_input", "dry1", "dry2", "dry3", "wet1", "wet2", "wet3", "missing_before"]
 
 
 class Station:
@@ -125,7 +126,7 @@ class Station:
         self.hist.append({"seq": self.seq, "pc": now, "ms": t.ms, "raw": t.raw, "filt": t.filtered_raw,
                           "pct": t.moisture_pct, "avg": t.average_pct, "pump": t.pump_commanded,
                           "demand": t.water_needed, "led": t.led_on, "auto": t.auto_mode, "lock": t.lockout,
-                          "fault": t.sensor_fault})
+                          "fault": t.sensor_fault, "test": bool(t.test_input)})
         self._check_thresholds(t)
         if self._csv:
             b = lambda x: int(bool(x))
@@ -133,7 +134,9 @@ class Station:
                                 *["" if v is None else v for v in t.moisture_pct],
                                 "" if t.average_pct is None else t.average_pct,
                                 b(t.calibrated), b(t.sensor_fault), b(t.water_needed), b(t.pump_commanded),
-                                b(t.led_on), b(t.auto_mode), b(t.lockout), t.pulses, b(t.hardware_verified), missing])
+                                b(t.led_on), b(t.auto_mode), b(t.lockout), t.pulses, b(t.hardware_verified),
+                                "" if t.paused is None else b(t.paused), "" if t.test_input is None else b(t.test_input),
+                                *_refs(t.dry_ref), *_refs(t.wet_ref), missing])
             self._csv_file.flush()
 
     def _check_thresholds(self, t: Telemetry):
@@ -150,19 +153,24 @@ class Station:
         self.threshold_mismatch = self._threshold_mismatch_run >= 3
 
     # ---------------------------------------------------------------- commands
-    def command(self, cmd: str, confirmed: bool) -> tuple[bool, str]:
+    def command(self, cmd: str, confirmed: bool, values=None) -> tuple[bool, str]:
         cmd = cmd.strip()
-        if cmd not in COMMANDS and not (cmd == "F" and self.source_kind == "simulator"):
+        sim_only = cmd == "F" and self.source_kind == "simulator"
+        if cmd not in COMMANDS and not sim_only:
             return False, f"unknown command {cmd!r}"
         if cmd in RISKY_COMMANDS and not confirmed:
             return False, f"'{cmd}' ({COMMANDS[cmd]}) needs explicit confirmation"
         if self.send_fn is None:
             return False, "no source"
+        try:
+            text = "F" if sim_only else command_line(cmd, values)
+        except (ValueError, TypeError) as e:
+            return False, str(e)
         what = COMMANDS.get(cmd, "simulator fault toggle")
         with self.lock:                      # logged before sending so it precedes the board's reply
-            self._log_event(f"command {cmd} ({what})", "operator")
+            self._log_event(f"command {text.strip()} ({what})", "operator")
         try:
-            res = self.send_fn(cmd)
+            res = self.send_fn(text)
         except Exception as e:  # noqa: BLE001
             with self.lock:
                 self._log_event(f"command {cmd} failed: {e}", "app")
@@ -191,6 +199,9 @@ class Station:
         if t.sensor_fault:
             a.append(("error", "sensor_fault", "Sensor fault: a reading is at 0 or 4095 counts. AUTO is off and the pump "
                                                "is held off. Check sensor 3V3, GND and the AO wire."))
+        if t.test_input:
+            a.append(("warn", "test_input", "TEST INPUT active: the board is using raw values sent with $RAW instead of "
+                                            "the sensors, and may pump on them. Ends after 5 min, with End test or X."))
         if t.lockout:
             a.append(("error", "lockout", "Safety lockout: 3 pulses did not bring the soil up to the stop threshold. "
                                           "Inspect the pump, tubing and reservoir, then send X."))
@@ -205,7 +216,10 @@ class Station:
                                             f"({self.start_pct}/{self.stop_pct}%). Check the .ino constants."))
         if t.water_needed and t.calibrated:
             a.append(("warn", "water_needed", "Water needed (average below the start threshold)."))
-        if not t.auto_mode and t.calibrated and t.hardware_verified and not t.lockout and not t.sensor_fault:
+        if t.paused and not t.lockout:
+            a.append(("warn", "paused", "AUTO is PAUSED (X, a sensor fault or a dry calibration). It stays paused "
+                                        "after a restart. Send A to resume."))
+        elif not t.auto_mode and t.calibrated and t.hardware_verified and not t.lockout and not t.sensor_fault:
             a.append(("info", "manual", "AUTO is off: the board will not water by itself."))
         if self.stats["missing_records"]:
             a.append(("info", "missing", f"{self.stats['missing_records']} telemetry record(s) missing this session."))
@@ -245,7 +259,9 @@ class Station:
         rate = analysis.drying_rate(ts, avg, pump)
         resp = analysis.pulse_responses(ts, avg, pump)
         return {"sensors": rep, "drying_pct_per_h": None if rate is None else round(rate, 2),
-                "pulse_responses": resp[-5:], "note": "Display-only analysis. The ESP32 controls the pump."}
+                "pulse_responses": resp[-5:],
+                "reference_candidate": analysis.reference_candidate([r["filt"] for r in h if not r.get("test")]),
+                "note": "Display-only analysis. The ESP32 controls the pump."}
 
     def history(self, since: int = 0) -> dict:
         with self.lock:
@@ -263,6 +279,10 @@ class Station:
         return {"seq": [r["seq"] for r in rows], "raw": raw, "firmware": [r["filt"][sensor] for r in rows],
                 "dashboard": [round(v, 1) for v in fn(raw)], "name": name,
                 "spikes": [rows[i]["seq"] for i in analysis.hampel_spikes(raw)]}
+
+
+def _refs(r):
+    return ["" if v is None else v for v in (r or [None] * 3)]
 
 
 def _iso(epoch: float) -> str:

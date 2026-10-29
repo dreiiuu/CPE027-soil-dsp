@@ -27,6 +27,9 @@ button:hover{background:#2f402f}button.risky{border-color:#6a4a2a}button:disable
 #log{font:12px ui-monospace,monospace;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 #log .device{color:var(--fg)}#log .app{color:var(--b)}#log .operator{color:var(--o)}
 small{color:var(--mut);overflow-wrap:anywhere}
+input[type=number]{width:72px;background:#0d120d;color:var(--fg);border:1px solid #3a4a3a;border-radius:6px;padding:5px;font:inherit}
+input[type=range]{width:180px;vertical-align:middle}
+.test{background:#3a2f12}
 </style></head><body>
 <h1>Smart Irrigation Monitor <span id="conn" class="pill">--</span> <small id="src"></small></h1>
 <div id="banner">SYNTHETIC DATA: this is a simulation or a synthetic log, not a measurement.</div>
@@ -48,6 +51,35 @@ small{color:var(--mut);overflow-wrap:anywhere}
   </table></div>
   <small>Raw = average of 12 ADC reads, 0-4095. Moisture = relative to your D (dry) and W (wet) references, 0-100%.</small>
 </div></div>
+
+<div class="row">
+  <div class="card" style="flex-basis:420px">
+    <h2>Calibration from raw values</h2>
+    <div class="scroll"><table>
+      <tr><th></th><th>Board DRY</th><th>Board WET</th><th>Last 30 s</th><th>New DRY</th><th>New WET</th><th>Now as %</th></tr>
+      <tbody id="calrows"></tbody>
+    </table></div>
+    <div id="candst" style="margin:6px 0"></div>
+    <button onclick="useCand('d')">Use last 30 s as DRY</button><button onclick="useCand('w')">Use last 30 s as WET</button>
+    <button onclick="loadBoard()">Copy board values</button>
+    <button class="risky" onclick="sendCal()">Send to board ($CAL)</button>
+    <div class="scroll" style="margin-top:8px"><table id="maptab"></table></div>
+    <small>How the board turns raw counts into %: pct = 100 &times; (raw &minus; dry) / (wet &minus; dry), clamped to 0-100.
+    Capacitive probes usually read HIGHER when dry. Leave the probes still in dry soil, wait until "settled", press
+    "Use as DRY"; then the same in wet soil. Sending stores both on the board and arms AUTO.</small>
+  </div>
+  <div class="card" style="flex-basis:320px">
+    <h2>Bench test input ($RAW)</h2>
+    <div>Pretend the soil reads <input type="range" id="tp" min="0" max="100" value="45" oninput="tpChanged()"> <b id="tpv">45%</b></div>
+    <div class="scroll"><table><tr><th></th><th>S1</th><th>S2</th><th>S3</th></tr>
+      <tr><td>Raw to send</td><td><input type="number" id="r0"></td><td><input type="number" id="r1"></td><td><input type="number" id="r2"></td></tr></table></div>
+    <button class="risky" onclick="sendRaw()">Start test input</button><button onclick="cmdv('RAW_OFF')">End test input</button>
+    <div id="testst" style="margin-top:6px"></div>
+    <small>The board replaces the three sensor readings with these raw values for up to 5 minutes. The filter,
+    thresholds, pulses, soak time and lockout all run as normal, so you can check the pump at 45% or 75% without
+    drying or flooding the soil. The pump REALLY switches if the hardware is verified. X also ends it.</small>
+  </div>
+</div>
 
 <div class="row"><div class="card" style="flex-basis:100%">
   <h2>Moisture trend <select id="win"><option value="120">2 min</option><option value="600" selected>10 min</option><option value="3600">60 min</option></select></h2>
@@ -85,19 +117,48 @@ let S=null, H={seq:[],pc:[],ms:[],raw:[],filt:[],pct:[],avg:[],pump:[]}, F=null,
 const CONFIRM={
  D:"Save the DRY reference?\n\nAll three probes must be in your dry reference soil, inserted to the line and left still.",
  W:"Save the WET reference?\n\nAll three probes must be in your wet reference soil, inserted to the line and left still.",
- A:"Enable AUTOMATIC watering?\n\nConfirm: relay wired COM->NO (NC unused), the pump stops when commanded OFF, the tube points into the tray, and someone is watching.",
+ A:"Resume AUTOMATIC watering?\n\nConfirm: relay wired COM->NO (NC unused), the pump stops when commanded OFF, the tube points into the tray, and someone is watching.",
  T:"Run ONE 1.5 s pump pulse?\n\nConfirm the pump outlet is in the tray or a cup and someone is watching."};
-const LABEL={D:"Calibrate DRY (D)",W:"Calibrate WET (W)",A:"Enable AUTO (A)",X:"STOP / clear lockout (X)",L:"LED test (L)",T:"Pump pulse (T)","?":"Help (?)",F:"Sim: toggle S3 fault"};
+const LABEL={D:"Calibrate DRY (D)",W:"Calibrate WET (W)",A:"Resume AUTO (A)",X:"STOP / pause (X)",L:"LED test (L)",T:"Pump pulse (T)","?":"Help (?)",F:"Sim: toggle S3 fault"};
 
 function fmt(v,d=0){return v==null?'--':(+v).toFixed(d)}
 function tstr(e){const d=new Date(e*1000);return d.toLocaleTimeString()}
 
-async function cmd(c){
+async function cmd(c,values,prompt){
   let confirm=false;
-  if(S&&S.commands[c]&&S.commands[c].risky){if(!window.confirm(CONFIRM[c]))return;confirm=true}
-  try{const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:c,confirm})});
+  if(S&&S.commands[c]&&S.commands[c].risky){if(!window.confirm(prompt||CONFIRM[c]))return;confirm=true}
+  try{const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:c,confirm,values})});
     const j=await r.json();$('cmdmsg').textContent=(j.ok?'OK: ':'Refused: ')+j.msg;$('cmdmsg').className=j.ok?'on':'bad'}
   catch(e){$('cmdmsg').textContent='Request failed: '+e;$('cmdmsg').className='bad'}
+}
+function cmdv(c,v,p){return cmd(c,v,p)}
+function pctOf(raw,d,w){if(d==null||w==null||!isFinite(d)||!isFinite(w)||Math.abs(d-w)<150)return null;const p=100*(raw-d)/(w-d);return Math.max(0,Math.min(100,p>=0?Math.floor(p+.5):-Math.floor(-p+.5)))}
+const num=id=>{const e=$(id);if(!e||e.value==='')return null;return +e.value};
+let calInit=false;
+function useCand(k){const c=S&&S.analysis.reference_candidate;if(!c||c.value[0]==null)return;
+  if(!c.stable&&!window.confirm('The readings have not settled yet (still moving or noisy). Use them anyway?'))return;
+  for(let i=0;i<3;i++)$(k+i).value=c.value[i];calRender()}
+function loadBoard(){const t=S&&S.t;if(!t||!t.dry_ref)return;for(let i=0;i<3;i++){$('d'+i).value=t.dry_ref[i]??'';$('w'+i).value=t.wet_ref[i]??''}calRender()}
+function sendCal(){const v=[0,1,2].map(i=>num('d'+i)).concat([0,1,2].map(i=>num('w'+i)));
+  if(v.some(x=>x==null)){$('cmdmsg').textContent='Refused: fill in all six values';$('cmdmsg').className='bad';return}
+  cmd('CAL',v,'Store these references on the board?\n\nDRY: '+v.slice(0,3).join(', ')+'\nWET: '+v.slice(3).join(', ')+'\n\nThis replaces the saved calibration and arms AUTO (if the pump hardware is verified).')}
+function tpChanged(){$('tpv').textContent=$('tp').value+'%';const t=S&&S.t;if(!t||!t.dry_ref||t.dry_ref[0]==null||t.wet_ref[0]==null)return;
+  for(let i=0;i<3;i++)$('r'+i).value=Math.round(t.dry_ref[i]+(+$('tp').value)/100*(t.wet_ref[i]-t.dry_ref[i]))}
+function sendRaw(){const v=[0,1,2].map(i=>num('r'+i));if(v.some(x=>x==null)){$('cmdmsg').textContent='Refused: fill in three raw values';$('cmdmsg').className='bad';return}
+  cmd('RAW',v,'Start a 5-minute TEST INPUT with raw '+v.join(', ')+'?\n\nThe board will act on these values instead of the sensors. If the pump hardware is verified the pump really runs: outlet in the tray or a cup, someone watching.')}
+function calRender(){const t=S&&S.t,c=S&&S.analysis.reference_candidate;if(!t)return;
+  let r='';for(let i=0;i<3;i++){const d=num('d'+i),w=num('w'+i),p=pctOf(t.filtered_raw[i],d,w);
+    r+=`<tr><td>S${i+1}</td><td>${t.dry_ref?t.dry_ref[i]??'--':'n/a'}</td><td>${t.wet_ref?t.wet_ref[i]??'--':'n/a'}</td><td>${c&&c.value[i]!=null?c.value[i]:'--'}</td>
+    <td><input type="number" id="d${i}" value="${d??''}"></td><td><input type="number" id="w${i}" value="${w??''}"></td><td>${p==null?'--':p+'%'}</td></tr>`}
+  const foc=document.activeElement&&document.activeElement.id;if(!/^[dw][0-2]$/.test(foc||''))$('calrows').innerHTML=r;
+  else{for(let i=0;i<3;i++){const cells=$('calrows').rows[i].cells,p=pctOf(t.filtered_raw[i],num('d'+i),num('w'+i));cells[3].textContent=c&&c.value[i]!=null?c.value[i]:'--';cells[6].textContent=p==null?'--':p+'%'}}
+  if(!calInit&&t.dry_ref){calInit=true;loadBoard();tpChanged();return}
+  $('candst').innerHTML=!c||c.value[0]==null?'<small>collecting readings...</small>':(c.stable?'<span class="on">Last 30 s: settled</span>':'<span class="warn">Last 30 s: still moving (SD '+c.sd.join(' / ')+' counts)</span>');
+  let m='<tr><th>Example</th><th>S1</th><th>S2</th><th>S3</th></tr>';
+  for(const q of [0,25,50,70,100]){m+=`<tr><td>${q}%${q===0?' (dry)':q===100?' (wet)':q===50?' start':q===70?' stop':''}</td>`;
+    for(let i=0;i<3;i++){const d=num('d'+i),w=num('w'+i);m+=`<td>${d==null||w==null?'--':'raw '+Math.round(d+q/100*(w-d))}</td>`}m+='</tr>'}
+  $('maptab').innerHTML=m;
+  $('testst').innerHTML=t.test_input?'<span class="warn">TEST INPUT ACTIVE</span>':(t.test_input===false?'<span class="off">real sensors</span>':'<small>firmware v1: no test input</small>');
 }
 function buildButtons(){
   const keys=['D','W','A','X','L','T','?'];if(S.conn.source==='simulator')keys.push('F');
@@ -124,15 +185,15 @@ function render(){
   $('avg').className='v '+(t.average_pct==null?'warn':(t.water_needed?'bad':'on'));
   $('demand').textContent=t.water_needed?'YES':'no';$('demand').className='v '+(t.water_needed?'warn':'off');
   $('pump').textContent=t.pump_commanded?'ON':'OFF';$('pump').className='v '+(t.pump_commanded?'on':'off');
-  $('mode').textContent=t.lockout?'LOCKOUT':(t.auto_mode?'AUTO':'MANUAL');$('mode').className='v '+(t.lockout?'bad':(t.auto_mode?'on':'off'));
+  $('mode').textContent=t.lockout?'LOCKOUT':(t.auto_mode?'AUTO':(t.paused?'PAUSED':'MANUAL'));$('mode').className='v '+(t.lockout?'bad':(t.auto_mode?'on':(t.paused?'warn':'off')));
   $('pulses').textContent=`pulses this cycle: ${t.pulses}/3`;
   $('led').textContent=t.led_on?'ON':'off';$('led').className='v '+(t.led_on?'bad':'off');
   $('hw').textContent=t.hardware_verified?'pump hardware verified':'pump blocked: hardware not verified';$('hw').className=t.hardware_verified?'':'warn';
   const A=S.analysis.sensors||{};
   let rows='';for(let i=0;i<3;i++){const p=t.moisture_pct[i];
-    rows+=`<tr><td>S${i+1}</td><td>${i+1}</td><td>${t.raw[i]}</td><td>${t.filtered_raw[i]}</td><td class="${p==null?'warn':''}">${p==null?'--':p+'%'}</td>
+    rows+=`<tr class="${t.test_input?'test':''}"><td>S${i+1}${t.test_input?' (TEST)':''}</td><td>${i+1}</td><td>${t.raw[i]}</td><td>${t.filtered_raw[i]}</td><td class="${p==null?'warn':''}">${p==null?'--':p+'%'}</td>
     <td>${fmt(A.noise_sd&&A.noise_sd[i],1)}</td><td>${A.spikes_recent?A.spikes_recent[i]:'--'}</td><td>${A.drift_counts_per_h&&A.drift_counts_per_h[i]!=null?A.drift_counts_per_h[i]:'--'}</td></tr>`}
-  $('sens').innerHTML=rows;
+  $('sens').innerHTML=rows;calRender();
   const an=S.analysis;let h='';
   h+=`<div>Drying rate (last 10 min, pump idle): <b>${an.drying_pct_per_h==null?'not enough data':an.drying_pct_per_h+' %/h'}</b></div>`;
   h+=`<div>Probe spread now: <b>${A.spread_pct==null?'--':A.spread_pct+' points'}</b></div>`;

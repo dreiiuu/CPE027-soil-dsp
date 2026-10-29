@@ -20,12 +20,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "software"))
 
 from irrigation_ui import analysis  # noqa: E402
-from irrigation_ui.protocol import format_telemetry, parse_line  # noqa: E402
+from irrigation_ui.protocol import command_line, format_telemetry, parse_line  # noqa: E402
 from irrigation_ui.server import make_server  # noqa: E402
 from irrigation_ui.sources import FirmwareModel, SimSource  # noqa: E402
 from irrigation_ui.station import Station  # noqa: E402
 
 FW_SERIAL = None
+FW_SERIAL_VERIFIED = None
 EXAMPLE = ('{"type":"telemetry","v":1,"ms":60123,"raw":[2580,3160,3197],"filtered_raw":[2582,3163,3196],'
            '"moisture_pct":[44,48,52],"average_pct":48,"calibrated":true,"sensor_fault":false,"water_needed":true,'
            '"pump_commanded":false,"led_on":true,"auto_mode":true,"lockout":false,"pulses":1,"hardware_verified":true}')
@@ -67,6 +68,28 @@ class Protocol(unittest.TestCase):
         for s in ("ESP-ROM:esp32s3-20210327", "", "rst:0x1 (POWERON),boot:0x8", '{"type":"other"}'):
             self.assertEqual(parse_line(s).kind, "noise", s)
 
+    def test_v2_fields(self):
+        s = EXAMPLE[:-1] + ',"paused":true,"test_input":false,"dry_ref":[2950,3380,3400],"wet_ref":[null,null,null]}'
+        t = parse_line(s).telemetry
+        self.assertEqual((t.paused, t.test_input, t.dry_ref, t.wet_ref), (True, False, [2950, 3380, 3400], [None] * 3))
+        self.assertEqual(format_telemetry(t), s)
+        self.assertIsNone(parse_line(EXAMPLE).telemetry.paused)           # v1.0 firmware line still fine
+        self.assertEqual(parse_line(s.replace('"paused":true', '"paused":1')).kind, "bad")
+        self.assertEqual(parse_line(s.replace('[2950,3380,3400]', '[2950,3380]')).kind, "bad")
+
+    def test_command_lines(self):
+        self.assertEqual(command_line("CAL", [3200, 3300, 3350, 2000, 2100, 2150]), "$CAL 3200 3300 3350 2000 2100 2150\n")
+        self.assertEqual(command_line("RAW", [2800, 3000, 3100]), "$RAW 2800 3000 3100\n")
+        self.assertEqual(command_line("RAW_OFF"), "$RAW OFF\n")
+        self.assertEqual(command_line("A"), "A")
+        for bad in ([3200, 3300, 3350, 3100, 2100, 2150],      # S1 span 100 < 150
+                    [4090, 3300, 3350, 2000, 2100, 2150],      # rail
+                    [3200, 3300, 3350, 2000, 2100]):           # 5 values
+            with self.assertRaises(ValueError):
+                command_line("CAL", bad)
+        with self.assertRaises(ValueError):
+            command_line("RAW", [1, 2, 5000])
+
     def test_rejects(self):
         self.assertEqual(parse_line(EXAMPLE.replace('"v":1', '"v":2')).kind, "version")
         self.assertEqual(parse_line(EXAMPLE[:-20]).kind, "bad")                                   # cut-off line
@@ -106,7 +129,11 @@ class FirmwareToApp(unittest.TestCase):
         self.assertTrue(any(x.sensor_fault and x.moisture_pct == [None] * 3 for x in t))
         self.assertFalse(any(x.pump_commanded for x in t))            # pump hardware not verified
         self.assertFalse(any(x.hardware_verified for x in t))
-        self.assertTrue(t[-1].calibrated)                             # survived the reboot via NVS
+        self.assertFalse(any(x.auto_mode for x in t))
+        self.assertTrue(any(x.test_input and x.raw == [2800, 3200, 3220] for x in t))
+        self.assertTrue(t[-1].calibrated and t[-1].paused)            # both survived the reboot via NVS
+        self.assertEqual(t[-1].dry_ref, [2950, 3380, 3400])
+        self.assertEqual(t[-1].wet_ref, [1480, 1700, 1720])
 
     def test_station(self):
         clk = FakeClock()
@@ -122,6 +149,44 @@ class FirmwareToApp(unittest.TestCase):
         codes = {a["code"] for a in s["alerts"]}
         self.assertIn("hw_unverified", codes)
         self.assertNotIn("thresholds", codes)                         # firmware agrees with the 50/70 display
+
+
+@unittest.skipUnless(FW_SERIAL_VERIFIED or len(sys.argv) > 2, "needs the verified-build output (make app-test)")
+class VerifiedFirmwareToApp(unittest.TestCase):
+    """The firmware compiled with PUMP_HARDWARE_VERIFIED=true (automatic watering really runs)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lines = Path(FW_SERIAL_VERIFIED).read_text().splitlines()
+        cls.tel = [parse_line(l).telemetry for l in cls.lines if l.startswith("{")]
+
+    def test_parse_and_states(self):
+        for l in self.lines:
+            p = parse_line(l)
+            self.assertIn(p.kind, ("telemetry", "event"), l)
+            if p.kind == "telemetry":
+                self.assertEqual(format_telemetry(p.telemetry), l)
+        t = self.tel
+        self.assertTrue(any(x.pump_commanded for x in t))
+        self.assertTrue(any(x.lockout for x in t))
+        self.assertTrue(any(x.auto_mode for x in t))
+        self.assertTrue(any(x.paused for x in t))
+        self.assertTrue(any(x.test_input and x.pump_commanded for x in t))
+        self.assertLessEqual(max(x.pulses for x in t), 3)
+
+    def test_station(self):
+        clk = FakeClock()
+        st = Station("serial", False, None, clock=clk)
+        st.on_status("connected", "COM7")
+        feed(st, self.lines, clk)
+        s = st.state()
+        self.assertEqual(s["stats"]["device_restarts"], 3)
+        self.assertEqual(s["stats"].get("bad_lines", 0), 0)
+        self.assertEqual(s["stats"].get("missing_records", 0), 0)
+        evs = [e["text"] for e in st.events]
+        for e in ("safety_lockout_max_pulses", "auto_enabled_at_boot", "test_input_on", "auto_paused_sensor_fault"):
+            self.assertIn(e, evs)
+        self.assertIsNotNone(s["analysis"]["pulse_responses"])
 
 
 class StationBehaviour(unittest.TestCase):
@@ -188,7 +253,12 @@ class StationBehaviour(unittest.TestCase):
         self.assertTrue(st.command("A", True)[0])
         self.assertFalse(st.command("Z", True)[0])
         self.assertFalse(st.command("F", True)[0])          # simulator-only command on a real board
-        self.assertEqual(sent, ["X", "A"])
+        self.assertFalse(st.command("CAL", False, [3200, 3300, 3350, 2000, 2100, 2150])[0])
+        self.assertFalse(st.command("CAL", True, [3200, 3300, 3350, 3150, 2100, 2150])[0])   # span too small
+        self.assertTrue(st.command("CAL", True, [3200, 3300, 3350, 2000, 2100, 2150])[0])
+        self.assertFalse(st.command("RAW", False, [2800, 3000, 3100])[0])
+        self.assertTrue(st.command("RAW_OFF", False)[0])
+        self.assertEqual(sent, ["X", "A", "$CAL 3200 3300 3350 2000 2100 2150\n", "$RAW OFF\n"])
 
 
 class Simulator(unittest.TestCase):
@@ -239,6 +309,25 @@ class Simulator(unittest.TestCase):
         self.assertIn("#EVENT safety_lockout_max_pulses", lines)
 
 
+    def test_cal_and_raw_commands(self):
+        lines = []
+        m = FirmwareModel(lines.append, hardware_verified=True, calibrated=False, seed=5)
+        for _ in range(30):
+            m.advance(100)
+        self.assertFalse(m.auto)
+        m.command("$CAL 2950 3380 3400 1480 1700 1720\n")
+        self.assertTrue(m.cal_valid() and m.auto)
+        m.command("$RAW %d %d %d\n" % tuple(analysis.raw_for_percent(45, d, w) for d, w in zip(m.dry, m.wet)))
+        for _ in range(100):
+            m.advance(100)
+        t = parse_line([l for l in lines if l.startswith("{")][-1]).telemetry
+        self.assertTrue(t.test_input and t.water_needed)
+        self.assertEqual(t.average_pct, 45)
+        self.assertGreaterEqual(m.pulses, 1)
+        m.command("X")
+        self.assertTrue(m.paused and not m.test and not m.auto)
+
+
 class Analysis(unittest.TestCase):
     def test_filters(self):
         x = [0.0] * 5 + [10.0] * 20
@@ -267,6 +356,19 @@ class Analysis(unittest.TestCase):
         r = analysis.pulse_responses(t, y2, pump)
         self.assertEqual(len(r), 1)
         self.assertEqual(r[0]["lag_s"], 5)
+
+    def test_reference_candidate_and_percent(self):
+        steady = [[3200 + (i % 3), 3300, 3350] for i in range(30)]
+        c = analysis.reference_candidate(steady)
+        self.assertTrue(c["stable"])
+        self.assertEqual(c["value"], [3201, 3300, 3350])
+        moving = [[3200 + 5 * i, 3300, 3350] for i in range(30)]
+        self.assertFalse(analysis.reference_candidate(moving)["stable"])
+        # the handoff's illustration: dry 3200, wet 2000
+        self.assertEqual([analysis.percent(r, 3200, 2000) for r in (3200, 3000, 2600, 2200, 2000, 3500, 1800)],
+                         [0, 17, 50, 83, 100, 0, 100])
+        self.assertEqual(analysis.raw_for_percent(50, 3200, 2000), 2600)
+        self.assertIsNone(analysis.percent(2500, 3200, 3100))
 
     def test_disagreement_warning(self):
         raw = [[2500, 2600, 2700]] * 40
@@ -316,6 +418,8 @@ class Server(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 2:
+        FW_SERIAL_VERIFIED = sys.argv.pop(2)
     if len(sys.argv) > 1:
         FW_SERIAL = sys.argv.pop(1)
     unittest.main(verbosity=1)

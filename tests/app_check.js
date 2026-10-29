@@ -18,13 +18,30 @@ const out = process.argv[3] || 'build';
   await page.waitForTimeout(1500);
   const msg = await page.textContent('#cmdmsg');
   await page.waitForTimeout(25000);
+  // calibration panel: candidate from the last 30 s, preview, send; then a $RAW bench test at 45 %
+  await page.click('text=Use last 30 s as DRY');
+  const d0 = await page.inputValue('#d0');
+  await page.click('text=Send to board ($CAL)');
+  await page.waitForTimeout(1500);
+  const calMsg = await page.textContent('#cmdmsg');
+  await page.click('text=Copy board values');
+  await page.fill('#tp', '45'); await page.dispatchEvent('#tp', 'input');
+  const r0 = await page.inputValue('#r0');
+  await page.click('text=Start test input');
+  await page.waitForTimeout(3000);
+  const testSt = await page.textContent('#testst');
+  console.log(`calibration: DRY candidate S1=${d0}, send -> ${calMsg}; test input S1 raw ${r0} -> ${testSt}`);
+  if (!d0) { ok = false; errors.push('no calibration candidate'); }
+  if (!/TEST INPUT ACTIVE/.test(testSt)) { ok = false; errors.push('test input did not start'); }
+  await page.click('text=End test input');
+  await page.waitForTimeout(2000);
   const v = {};
   for (const id of ['conn', 'avg', 'pump', 'mode', 'demand', 'led']) v[id] = (await page.textContent('#' + id)).trim();
   const rows = await page.$$eval('#sens tr', r => r.length);
   const ev = await page.textContent('#log');
   console.log('after A:', msg, '|', JSON.stringify(v), '| sensor rows', rows);
   if (v.conn !== 'LIVE' || v.avg === '--' || rows !== 3) { ok = false; errors.push('values never filled in'); }
-  if (!/auto_enabled/.test(ev)) { ok = false; errors.push('AUTO was not enabled'); }
+  if (!/auto_enabled/.test(ev) || !/test_input_on/.test(ev)) { ok = false; errors.push('AUTO was not enabled'); }
   if (!/pump_command_on/.test(ev)) { ok = false; errors.push('simulated pump never ran'); }
   await page.screenshot({ path: `${out}/app_desktop.png`, fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });

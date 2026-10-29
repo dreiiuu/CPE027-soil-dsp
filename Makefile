@@ -38,7 +38,11 @@ crosscheck: build
 app-test: build
 	$(CXX) -std=gnu++17 -O1 -Wall -Wextra -include Arduino.h -I $(STUBS) tests/fw_host_run.cpp -o build/fw_host_run
 	./build/fw_host_run > build/fw_serial.txt
-	$(PY) tests/test_irrigation_ui.py build/fw_serial.txt
+	sed 's/const bool PUMP_HARDWARE_VERIFIED = false;/const bool PUMP_HARDWARE_VERIFIED = true;/' firmware/smart_irrigation/smart_irrigation.ino > build/smart_irrigation_verified.ino
+	grep -q 'PUMP_HARDWARE_VERIFIED = true;' build/smart_irrigation_verified.ino
+	$(CXX) -std=gnu++17 -O1 -Wall -Wextra -include Arduino.h -I $(STUBS) -DVERIFIED_BUILD '-DFW_FILE="../build/smart_irrigation_verified.ino"' tests/fw_host_run.cpp -o build/fw_host_verified
+	./build/fw_host_verified > build/fw_serial_verified.txt
+	$(PY) tests/test_irrigation_ui.py build/fw_serial.txt build/fw_serial_verified.txt
 
 # Optional (needs node + playwright): the PC app against its simulator, in Chromium
 app-ui: build

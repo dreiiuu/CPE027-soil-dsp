@@ -1,7 +1,7 @@
 # Smart Irrigation Monitor (PC software)
 
 The computer side of the system. It reads the ESP32-S3's USB serial telemetry
-(`firmware/smart_irrigation/smart_irrigation.ino`, protocol v1) and shows it live in a browser:
+(`firmware/smart_irrigation/smart_irrigation.ino` v2.0, protocol v1; v1.0 firmware works too) and shows it live in a browser:
 the three capacitive sensors (raw ADC, firmware-filtered ADC, relative %), the average, water demand,
 pump command, LED, AUTO/MANUAL/LOCKOUT, pulse count, faults, plus logging and DSP analysis.
 
@@ -67,7 +67,9 @@ Options: `--http-port`, `--log-dir` (default `logs/`), `--no-log`, `--start-pct/
 | Moisture trend | Average and S1-S3 % with the start/stop thresholds, pump-command periods shaded. 2/10/60 min |
 | DSP comparison | One sensor's raw counts vs the firmware EMA vs a dashboard filter: moving average M=10, EMA 0.10, running median 5 + EMA 0.10 (the report's two-stage filter), EMA 0.25. Detected glitches are marked |
 | Analysis | Drying rate (%/h, from samples at least 60 s after the last pulse), how long the reading takes to rise 2 points after each pulse, probe spread, warnings (probes disagree, stuck at 0/100 %, noisy, one probe drifting) |
-| Controls | D, W, A, T need a confirmation dialog and the server refuses them without it. X (stop) never needs one. All disabled during replay |
+| Calibration from raw values | The references the board uses, the median of the last 30 s of filtered readings per sensor (with a settled / still moving indicator), editable new DRY/WET values, the live % those values would give, and a raw-to-% table at 0/25/50/70/100%. **Send to board** stores them with `$CAL` |
+| Bench test input | A slider for a target %, converted to raw counts per sensor with the board's references (or type the raw values). **Start test input** sends `$RAW` (5 min maximum), **End test input** sends `$RAW OFF`. Rows turn amber and the TFT says TEST INPUT while it runs |
+| Controls | D, W, A, T, `$CAL` and `$RAW` need a confirmation dialog, and the server refuses them without it. X (stop and pause) and End test never need one. All disabled during replay |
 | Events / Session | `#EVENT` lines from the board, app and operator actions, record counts, missing records, rejected lines, board restarts, CSV download |
 
 ## Logs
@@ -102,12 +104,30 @@ Taken unchanged from the handoff, section 7. The firmware is the authority.
 | `average_pct` | int or null | integer mean of the three |
 | `calibrated`, `sensor_fault`, `water_needed`, `pump_commanded`, `led_on`, `auto_mode`, `lockout`, `hardware_verified` | bool | as named. `pump_commanded` is the software command, not measured flow |
 | `pulses` | int | pump pulses in the current watering cycle (max 3) |
+| `paused` | bool | v2: AUTO deliberately paused (X, sensor fault, dry calibration); survives a restart |
+| `test_input` | bool | v2: a `$RAW` test input replaces the sensor readings |
+| `dry_ref`, `wet_ref` | 3 x (int or null) | v2: the stored raw references (null = not set) |
+
+The v2 fields are optional for the parser, so logs from firmware v1.0 still load.
 
 A line with a missing field, a wrong type, an out-of-range value or the wrong length is rejected and
 counted. It never shows up as a reading.
 
-Commands (single ASCII letter, no newline needed): `D` dry reference, `W` wet reference,
-`A` AUTO on, `X` stop + clear lockout, `L` LED test, `T` 1.5 s pump pulse, `?` help.
+Commands (single ASCII letter, no newline needed): `D` dry reference, `W` wet reference (arms AUTO),
+`A` resume AUTO, `X` stop + pause + clear lockout + end test input, `L` LED test, `T` 1.5 s pump pulse,
+`?` help and stored calibration.
+
+Line commands (start with `$`, end with a newline; the app sends them for you):
+
+| Command | Effect |
+|---|---|
+| `$CAL d1 d2 d3 w1 w2 w3` | store dry and wet raw references (each 11-4084, dry and wet at least 150 apart). Arms AUTO like `W` |
+| `$RAW r1 r2 r3` | TEST INPUT: use these raw values instead of the sensors for up to 5 minutes |
+| `$RAW OFF` | end the test input |
+
+How a raw reading becomes a percentage (same on the board and in the app):
+`pct = clamp(round(100 * (filtered - dry) / (wet - dry)), 0, 100)`. With the handoff's illustration,
+dry 3200 and wet 2000: raw 3000 is 17%, 2600 is 50%, 2200 is 83%. Those endpoints are only an example.
 
 ## Limits
 
@@ -120,8 +140,8 @@ Commands (single ASCII letter, no newline needed): `D` dry reference, `W` wet re
 ## Tests
 
 `make app-test` (from the repo root) compiles the **real** `smart_irrigation.ino` for the PC with stubbed
-hardware (`tests/fw_host_run.cpp`) and runs a scenario on it: boot, calibration, dry soil, the AUTO/T
-denials, a disconnected probe, recovery, LED test, power cycle. It checks that relay pin 6 is never driven
-ON, then feeds the firmware's actual serial output through this app (`tests/test_irrigation_ui.py`). The same
+hardware (`tests/fw_host_run.cpp`) twice: as shipped (the relay must never turn on) and with
+`PUMP_HARDWARE_VERIFIED=true` (automatic pulses, soak, lockout, reboot persistence, `$CAL`, `$RAW`). Both
+serial outputs are then fed through this app (`tests/test_irrigation_ui.py`). See `docs/INTEGRATION.md`. The same
 file tests the parser, the simulator's safety limits, the analysis and the HTTP API. `make app-ui` opens the
 dashboard in Chromium against the simulator (needs node and playwright).
