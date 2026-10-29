@@ -82,6 +82,7 @@ class Replay:
             **self.params,
             "tog": [self.toggles(self.m[0], i), self.toggles(self.x, i), self.toggles(self.ma, i), self.toggles(self.y, i)],
             "ip": "192.168.4.1 (AP) - mock replay",
+            "flt": [0, 0, 0], "pins": {"s": [2, 1, 3], "relay": 20, "relayActiveLow": 1},
         }
 
     def history(self):

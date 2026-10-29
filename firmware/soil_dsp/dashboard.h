@@ -36,10 +36,11 @@ small{color:var(--mut)}input{width:64px;background:#0d120d;color:var(--fg);borde
 <span><i class="sw" style="background:var(--r)"></i>&theta;dry</span><span><i class="sw" style="background:var(--b)"></i>&theta;wet</span></div>
 <div class="row" style="margin-top:10px">
 <div class="card"><div class="k">Sensors (calibrated index)</div>
-<table><tr><th></th><th>Raw ADC</th><th>Index</th></tr>
-<tr><td>S1 (v1.2)</td><td id="a0">-</td><td id="m0">-</td></tr>
-<tr><td>S2 (v2.0)</td><td id="a1">-</td><td id="m1">-</td></tr>
-<tr><td>S3 (v2.0)</td><td id="a2">-</td><td id="m2">-</td></tr></table></div>
+<table><tr><th></th><th>Pin</th><th>Raw ADC</th><th>Index</th><th>Wiring</th></tr>
+<tr><td>S1 (v1.2)</td><td id="g0">-</td><td id="a0">-</td><td id="m0">-</td><td id="f0">-</td></tr>
+<tr><td>S2 (v2.0)</td><td id="g1">-</td><td id="a1">-</td><td id="m1">-</td><td id="f1">-</td></tr>
+<tr><td>S3 (v2.0)</td><td id="g2">-</td><td id="a2">-</td><td id="m2">-</td><td id="f2">-</td></tr></table>
+<small id="relaypin"></small></div>
 <div class="card"><div class="k">Decision toggles at &theta;dry (since reset)</div>
 <table><tr><td>Raw sensor 1</td><td id="t0">-</td></tr><tr><td>Cross-sensor median</td><td id="t1">-</td></tr>
 <tr><td>Moving average</td><td id="t2">-</td></tr><tr><td>Median + EMA</td><td id="t3">-</td></tr></table>
@@ -91,7 +92,10 @@ function upd(s){S=s;push(s);if(H.t.length>MAXV)for(const k in H)H[k].shift();
 const col={DRY:'#e06c5a',OK:'#7fbf6a',WET:'#6fa8dc'}[s.status];$('status').textContent=s.status;$('status').style.color=col;
 $('y').textContent=s.y.toFixed(1);$('x').textContent=s.x.toFixed(1);
 $('pump').textContent=s.pump?'ON':'OFF';$('en').textContent=s.test?'test cycle running':(s.en?'control enabled':'control disabled');
-for(let i=0;i<3;i++){$('a'+i).textContent=s.a[i];$('m'+i).textContent=s.m[i].toFixed(1)}
+const fl=s.flt||[0,0,0],FN=['OK','NO SIGNAL','AT 3.3V'];
+for(let i=0;i<3;i++){$('a'+i).textContent=s.a[i];$('m'+i).textContent=s.m[i].toFixed(1);
+$('f'+i).textContent=FN[fl[i]]||'?';$('f'+i).style.color=fl[i]?'#e0a040':'';if(s.pins)$('g'+i).textContent='GPIO'+s.pins.s[i]}
+if(s.pins)$('relaypin').textContent='Relay IN: GPIO'+s.pins.relay+' (active '+(s.pins.relayActiveLow?'LOW':'HIGH')+')';
 for(let i=0;i<4;i++)$('t'+i).textContent=s.tog[i];
 $('calflag').textContent=s.calok?'':'UNCALIBRATED - pump locked';
 $('bEn').textContent='Pump control: '+(s.en?'ON':'OFF');$('bBl').textContent='Blanking: '+(s.blank?'ON':'OFF');$('bTe').textContent='Pump test cycle: '+(s.test?'ON':'OFF');

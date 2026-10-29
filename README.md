@@ -54,7 +54,14 @@ Checks before powering up:
 4. The pump is **disabled at boot** and locked until both calibrations exist. Press `d` in the serial monitor with all three probes in air, then `w` with all three in water up to the line (60 s each; the same buttons are on the dashboard). Values are stored in flash.
 5. Open the dashboard (IP is on the TFT and in the serial log). Enable pump control from the dashboard or with `e` once the thresholds are right for your medium.
 
-Serial commands: `d`/`w` calibrate dry/wet, `e`/`x` enable/disable pump control, `t` 3 s on/3 s off pump test, `b` blanking on/off, `r` reset filters, `s` show parameters, `h` CSV header.
+Serial commands: `d`/`w` calibrate dry/wet, `e`/`x` enable/disable pump control, `t` 3 s on/3 s off pump test, `b` blanking on/off, `r` reset filters, `s` show parameters, `h` CSV header, `p` pin map + wiring check.
+
+**Wiring check (do this before calibrating).** At boot the serial log prints the pin map the firmware uses (`# pins: ...`). The dashboard's sensor table shows each sensor's GPIO, raw counts and a *Wiring* column; the TFT row turns orange. A sensor is flagged after 3 s in a row of:
+
+- `NO SIGNAL` (under 200 counts): AOUT not on the pin it should be on, or the probe has no VCC/GND. Check the jumper against the table above.
+- `AT 3.3V` (over 4000 counts): AOUT shorted to 3.3 V, or a 5/6 V rail is reaching the ADC pin. **Unplug it immediately**: ESP32-S3 pins are not 5 V tolerant.
+
+A probe in air should read about 2700-3000 counts and one in water about 1100-1400. If S1 moves when you touch S2, two AOUT wires are swapped. Then press `t` and listen for the relay clicking every 3 s, which confirms GPIO20 to relay IN.
 
 ## Evidence run (the tests the report needs)
 
@@ -109,6 +116,7 @@ What has been verified, and what has not:
 | DSP core unit tests, host simulation of the `.ino`, firmware vs Python cross-check | pass |
 | Compile for ESP32-S3 with the real Espressif toolchain (core 3.0.7, `--warnings all`) | pass, 0 warnings, 75% flash, 15% RAM |
 | Dashboard in Chromium (laptop and phone width), no JS errors, live update | pass (against a mock replay, `docs/img/`) |
+| Wiring check (fault flags, pin map in UI/serial) | pass in host simulation; **the prebuilt image predates it**, rebuild from source to get it |
 | Running on your board, sensors, relay, pump | **not yet: that is iteration v0.5** |
 
 `data/synthetic/` is **simulated**, only there so the pipeline and CI can run before you have measurements. Never quote numbers from it.

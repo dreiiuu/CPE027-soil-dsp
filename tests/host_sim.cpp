@@ -85,6 +85,17 @@ int main() {
   g_serial_in = "t"; runSeconds(2);
   CHECK(!relayOn);
 
+  // --- wiring check: a 1-2 s dropout is not a fault, a sustained one is, and it clears on recovery
+  CHECK(sensorFault[0] == FAULT_NONE && sensorFault[1] == FAULT_NONE && sensorFault[2] == FAULT_NONE);
+  g_spikeSensor = 2; g_spikeCnt = 2; runSeconds(3);
+  CHECK(sensorFault[2] == FAULT_NONE);
+  for (int k = 0; k < 5; k++) { g_ms += 1000; g_adc[SENSOR_PIN[1]] = 0; loop(); }
+  CHECK(sensorFault[1] == FAULT_NO_SIGNAL);
+  for (int k = 0; k < 5; k++) { g_ms += 1000; g_adc[SENSOR_PIN[0]] = 4095; g_adc[SENSOR_PIN[1]] = 0; loop(); }
+  CHECK(sensorFault[0] == FAULT_AT_RAIL);
+  runSeconds(2);
+  CHECK(sensorFault[0] == FAULT_NONE && sensorFault[1] == FAULT_NONE);
+
   std::printf(failures ? "%d FAILED\n" : "host simulation of soil_dsp.ino passed\n", failures);
   return failures ? 1 : 0;
 }

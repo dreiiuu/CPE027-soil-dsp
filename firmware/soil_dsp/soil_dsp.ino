@@ -17,7 +17,8 @@
     d / w  start 60 s dry (air) / wet (water) calibration     e / x  enable / disable pump control
     t      toggle 3 s on / 3 s off pump test (Test 4)          b      toggle blanking
     r      reset filters and counters                          s      print calibration and parameters
-    h      print the CSV header                                ?      help
+    h      print the CSV header                                p      print pin map + wiring check
+    ?      help
 */
 #include <WiFi.h>
 #include <WebServer.h>
@@ -64,6 +65,14 @@ const bool     PUMP_ENABLED_AT_BOOT = false;   // safe default: enable from dash
 const uint32_t TEST_ON_MS = 3000, TEST_OFF_MS = 3000, TEST_MAX_MS = 600000;
 #define ADC_OVERSAMPLE 1                       // 1 = raw single reading (the signal the report filters)
 
+// ---------- wiring check (hardware bring-up aid; does not change the DSP path) ----------
+// A capacitive probe on 3.3 V reads roughly 1100-3000 counts. Counts stuck near 0 mean AOUT is not
+// reaching the pin or the probe has no power; counts stuck at the top mean AOUT is shorted to 3.3 V.
+const int FAULT_LOW_CNT  = 200;
+const int FAULT_HIGH_CNT = 4000;
+const int FAULT_HOLD_S   = 3;                  // consecutive samples before flagging (a single spike is not a fault)
+enum Fault : uint8_t { FAULT_NONE = 0, FAULT_NO_SIGNAL = 1, FAULT_AT_RAIL = 2 };
+
 // ---------- state ----------
 Preferences prefs;
 WebServer server(80);
@@ -97,6 +106,8 @@ float lastIdx[3] = {0, 0, 0};   // calibrated, before blanking
 dsp::PipelineOut lastOut{};
 dsp::Status lastStatus = dsp::Status::OK;
 String ipText = "";
+uint8_t sensorFault[3] = {FAULT_NONE, FAULT_NONE, FAULT_NONE};
+uint8_t faultRun[3] = {0, 0, 0};
 
 // history ring buffer for the dashboard (last HIST samples)
 const int HIST = 240;
@@ -112,6 +123,31 @@ static int readAdc(int pin) {
 #else
   return analogRead(pin);
 #endif
+}
+
+static const char* faultName(uint8_t f) {
+  return f == FAULT_NO_SIGNAL ? "NO SIGNAL" : (f == FAULT_AT_RAIL ? "AT 3.3V" : "OK");
+}
+
+static void checkWiring(const int a[3]) {
+  for (int i = 0; i < 3; i++) {
+    uint8_t f = a[i] < FAULT_LOW_CNT ? FAULT_NO_SIGNAL : (a[i] > FAULT_HIGH_CNT ? FAULT_AT_RAIL : FAULT_NONE);
+    if (f == FAULT_NONE) faultRun[i] = 0; else if (faultRun[i] < 255) faultRun[i]++;
+    uint8_t now = f;                                   // recovery clears at once, a fault needs FAULT_HOLD_S samples
+    if (f != FAULT_NONE && faultRun[i] < FAULT_HOLD_S) now = sensorFault[i];
+    if (now != sensorFault[i]) {
+      Serial.printf("# wiring: S%d (GPIO%d) %s, %d counts\n", i + 1, SENSOR_PIN[i], faultName(now), a[i]);
+      sensorFault[i] = now;
+    }
+  }
+}
+
+static void printPins() {
+  Serial.printf("# pins: S1(v1.2)=GPIO%d S2(v2.0)=GPIO%d S3(v2.0)=GPIO%d relay IN=GPIO%d (active %s)\n",
+                SENSOR_PIN[0], SENSOR_PIN[1], SENSOR_PIN[2], RELAY_PIN, RELAY_ON == LOW ? "LOW" : "HIGH");
+  Serial.printf("# pins: TFT SCK=%d MOSI=%d CS=%d DC=%d RST=%d\n", TFT_SCK, TFT_MOSI, TFT_CS, TFT_DC, TFT_RST);
+  for (int i = 0; i < 3 && sampleN > 0; i++)
+    Serial.printf("# wiring: S%d now %d counts, %s\n", i + 1, lastAdc[i], faultName(sensorFault[i]));
 }
 
 static bool calibrated() {
@@ -221,9 +257,11 @@ static void drawTft() {
     tftRow(48, col, word, 4);                       // status as a WORD plus colour
     tftRow(96, ST77XX_WHITE, String("y: ") + String(lastOut.y, 1) + "  x: " + String(lastOut.x, 1), 2);
   }
-  tftRow(126, ST77XX_WHITE, String("S1 ") + String(lastIdx[0], 1) + "  " + lastAdc[0], 2);
-  tftRow(148, ST77XX_WHITE, String("S2 ") + String(lastIdx[1], 1) + "  " + lastAdc[1], 2);
-  tftRow(170, ST77XX_WHITE, String("S3 ") + String(lastIdx[2], 1) + "  " + lastAdc[2], 2);
+  for (int i = 0; i < 3; i++) {
+    String label = String("S") + (i + 1) + " ";
+    if (sensorFault[i]) tftRow(126 + 22 * i, ST77XX_ORANGE, label + faultName(sensorFault[i]) + " " + lastAdc[i], 2);
+    else tftRow(126 + 22 * i, ST77XX_WHITE, label + String(lastIdx[i], 1) + "  " + lastAdc[i], 2);
+  }
   String mode = testMode ? "TEST" : (!calibrated() ? "LOCKED" : (pumpEnabled ? "AUTO" : "OFF"));
   tftRow(200, relayOn ? ST77XX_YELLOW : ST77XX_WHITE, String("Pump ") + (relayOn ? "ON " : "OFF") + " [" + mode + "]", 2);
   tftRow(222, ST77XX_WHITE, String("Toggles: ") + tog[3].count() + " (raw " + tog[0].count() + ")", 2);
@@ -235,6 +273,7 @@ static void tick(uint32_t tms) {
   int a[3];
   for (int i = 0; i < 3; i++) a[i] = readAdc(SENSOR_PIN[i]);
   for (int i = 0; i < 3; i++) { lastAdc[i] = a[i]; lastIdx[i] = dsp::toIndex(a[i], adryCnt[i], awetCnt[i]); }
+  checkWiring(a);
 
   if (cal.busy) {
     calSample(a);
@@ -282,13 +321,14 @@ static void tick(uint32_t tms) {
 
 // ============================================================ web
 static void sendState() {
-  char b[900];
+  char b[1024];
   snprintf(b, sizeof b,
     "{\"t\":%lu,\"a\":[%d,%d,%d],\"m\":[%.2f,%.2f,%.2f],\"x\":%.2f,\"y\":%.2f,\"ma\":%.2f,"
     "\"status\":\"%s\",\"pump\":%d,\"en\":%d,\"test\":%d,\"blank\":%d,\"calok\":%d,"
     "\"cal\":{\"busy\":%d,\"type\":\"%s\",\"n\":%d},"
     "\"thdry\":%.1f,\"thwet\":%.1f,\"h\":%.1f,\"tmax\":%lu,\"lock\":%lu,\"blankS\":%lu,"
-    "\"tog\":[%lu,%lu,%lu,%lu],\"ip\":\"%s\"}",
+    "\"tog\":[%lu,%lu,%lu,%lu],\"ip\":\"%s\","
+    "\"flt\":[%d,%d,%d],\"pins\":{\"s\":[%d,%d,%d],\"relay\":%d,\"relayActiveLow\":%d}}",
     (unsigned long)(sampleN > 0 ? (sampleN - 1) : 0), lastAdc[0], lastAdc[1], lastAdc[2],
     lastIdx[0], lastIdx[1], lastIdx[2], lastOut.x, lastOut.y, lastOut.yma,
     lastStatus == dsp::Status::DRY ? "DRY" : (lastStatus == dsp::Status::WET ? "WET" : "OK"),
@@ -297,7 +337,9 @@ static void sendState() {
     P.thetaDry, P.thetaWet, P.hysteresis, (unsigned long)(P.tMaxMs / 1000), (unsigned long)(P.lockoutMs / 1000),
     (unsigned long)(P.blankMs / 1000),
     (unsigned long)tog[0].count(), (unsigned long)tog[1].count(), (unsigned long)tog[2].count(), (unsigned long)tog[3].count(),
-    ipText.c_str());
+    ipText.c_str(),
+    sensorFault[0], sensorFault[1], sensorFault[2], SENSOR_PIN[0], SENSOR_PIN[1], SENSOR_PIN[2], RELAY_PIN,
+    (int)(RELAY_ON == LOW));
   server.send(200, "application/json", b);
 }
 
@@ -395,7 +437,8 @@ static void handleSerial() {
       case 'r': resetFilters(); Serial.println("# filters reset"); break;
       case 's': printParams(); break;
       case 'h': Serial.println("t_s,s1,s2,s3,pump"); break;
-      case '?': Serial.println("# d/w calibrate dry/wet | e/x pump enable/disable | t pump test | b blanking | r reset | s status | h header"); break;
+      case 'p': printPins(); break;
+      case '?': Serial.println("# d/w calibrate dry/wet | e/x pump enable/disable | t pump test | b blanking | r reset | s status | h header | p pins"); break;
       default: break;
     }
   }
@@ -433,6 +476,7 @@ void setup() {
 
   Serial.println("# ESP32-S3 soil DSP started");
   printParams();
+  printPins();
   Serial.println("t_s,s1,s2,s3,pump");
   t0Ms = millis();
 }
