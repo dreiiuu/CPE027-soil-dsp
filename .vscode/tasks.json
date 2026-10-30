@@ -1,0 +1,32 @@
+{
+  // Build and flash the firmware from VS Code with arduino-cli (same toolchain as CI).
+  // Terminal > Run Task... or Ctrl+Shift+B (compile). Run "Firmware: setup" once first.
+  "version": "2.0.0",
+  "inputs": [
+    { "id": "port", "type": "promptString", "description": "Board serial port (Windows: COM7, Linux: /dev/ttyACM0, macOS: /dev/cu.usbmodem...)", "default": "COM7" }
+  ],
+  "tasks": [
+    { "label": "Firmware: setup 1/4 board index", "type": "process", "command": "arduino-cli",
+      "args": ["core", "update-index", "--additional-urls", "https://espressif.github.io/arduino-esp32/package_esp32_index.json"] },
+    { "label": "Firmware: setup 2/4 ESP32 core", "type": "process", "command": "arduino-cli",
+      "args": ["core", "install", "esp32:esp32@3.0.7", "--additional-urls", "https://espressif.github.io/arduino-esp32/package_esp32_index.json"] },
+    { "label": "Firmware: setup 3/4 libraries", "type": "process", "command": "arduino-cli",
+      "args": ["lib", "install", "Adafruit GFX Library", "Adafruit ILI9341"] },
+    { "label": "Firmware: setup 4/4 list ports", "type": "process", "command": "arduino-cli", "args": ["board", "list"] },
+    { "label": "Firmware: setup", "dependsOrder": "sequence",
+      "dependsOn": ["Firmware: setup 1/4 board index", "Firmware: setup 2/4 ESP32 core", "Firmware: setup 3/4 libraries", "Firmware: setup 4/4 list ports"],
+      "problemMatcher": [] },
+    { "label": "Firmware: compile", "type": "process", "command": "arduino-cli",
+      "args": ["compile", "--fqbn", "esp32:esp32:esp32s3", "firmware/smart_irrigation"],
+      "group": { "kind": "build", "isDefault": true }, "problemMatcher": "$gcc" },
+    { "label": "Firmware: upload", "type": "process", "command": "arduino-cli",
+      "args": ["compile", "--upload", "--fqbn", "esp32:esp32:esp32s3", "--port", "${input:port}", "firmware/smart_irrigation"],
+      "problemMatcher": "$gcc" },
+    { "label": "Dashboard: run on board", "type": "process", "command": "python",
+      "args": ["-m", "irrigation_ui", "--port", "${input:port}"], "options": { "cwd": "${workspaceFolder}/software" },
+      "isBackground": true, "problemMatcher": [] },
+    { "label": "Dashboard: run simulator", "type": "process", "command": "python",
+      "args": ["-m", "irrigation_ui", "--sim", "--sim-verified"], "options": { "cwd": "${workspaceFolder}/software" },
+      "isBackground": true, "problemMatcher": [] }
+  ]
+}

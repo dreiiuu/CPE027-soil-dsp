@@ -7,11 +7,11 @@ per sensor: raw ADC (1 Hz) -> 3-point running median (spikes) -> 5-point moving 
    -> calibrated % -> average of 3 -> DRY / WET (thresholds + hysteresis) -> pump / TFT / PC dashboard
 ```
 
-## Current build (v1.0): start here
+## Current build (v2.1): start here
 
 The board on the bench follows `docs/handoff/Smart_Irrigation_DSP_Software_Handoff.md`: ILI9341 TFT, three
 v1.2 sensors on board labels 1/2/3, red LED on 5, relay on 6. Its firmware is
-**`firmware/smart_irrigation/smart_irrigation.ino`** v2.0: automatic watering per the v2 handoff, plus calibration
+**`firmware/smart_irrigation/smart_irrigation.ino`** v2.1: median 3 + moving average 5 filter, DRY/WET status, automatic watering per the v2 handoff, plus calibration
 from typed raw values (`$CAL`) and a bench test input (`$RAW`). The pump stays blocked until you set
 `PUMP_HARDWARE_VERIFIED=true`. The sensor values reach the software UI over USB serial:
 
@@ -24,6 +24,18 @@ cd software && python -m irrigation_ui --port COM7
 ```
 
 Then open http://127.0.0.1:8765/ (add `--sim --sim-verified` instead of `--port` to try it without the board).
+
+### Build and flash from VS Code (no Arduino IDE)
+
+1. Install [arduino-cli](https://arduino.github.io/arduino-cli/latest/installation/) and make sure `arduino-cli version` works in a terminal.
+2. Open the repo folder in VS Code. **Terminal > Run Task... > Firmware: setup** (once): installs the ESP32 core 3.0.7
+   and the Adafruit GFX + ILI9341 libraries, then lists the connected boards and their ports.
+3. **Firmware: compile** (Ctrl+Shift+B) checks that it builds. **Firmware: upload** asks for the port (e.g. `COM7`) and flashes.
+   Close the dashboard first: only one program can use the serial port.
+4. **Dashboard: run on board** asks for the port and starts the PC app. **Dashboard: run simulator** runs it without the board.
+
+Board settings are the ESP32S3 Dev Module defaults (`esp32:esp32:esp32s3`), the same as CI. Set
+`PUMP_HARDWARE_VERIFIED` in the `.ino` before uploading.
 Details: `software/README.md`. How the pieces connect, and the firmware/report mismatches to resolve:
 **`docs/INTEGRATION.md`**.
 
