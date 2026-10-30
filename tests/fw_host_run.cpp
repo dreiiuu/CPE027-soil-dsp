@@ -47,7 +47,7 @@ static void run(int seconds) {
 }
 static void cmd(const char* c) { g_serial_in += c; }
 static void reboot() {           // power cycle: RAM state lost, NVS kept, uptime restarts
-  g_ms = 0; filterInitialized = false; autoEnabled = pumpCommandOn = manualPulse = waterDemand = false;
+  g_ms = 0; filterInitialized = statusKnown = false; autoEnabled = pumpCommandOn = manualPulse = waterDemand = false;
   testInput = ledTestActive = false; pulsesUsed = 0; lastPumpStopMs = 0; lineMode = false;
   memset(fieldCache, 0, sizeof fieldCache);
   wasOn = false;
@@ -69,12 +69,13 @@ int main() {
   setPct(62); run(8);
   setPct(40); run(6);                             // below 50 %: water needed, LED on
   CHECK(waterDemand && g_pin[LED_PIN] == HIGH);
+  CHECK(statusKnown && soilDry);                  // DRY below the start threshold
   cmd("A"); run(2); CHECK(!autoEnabled);          // denied: hardware not verified
   cmd("T"); run(2); CHECK(!pumpCommandOn);
   g_adc[3] = 0; run(3);                           // S3 AO disconnected -> fault, paused
   CHECK(sensorFault && autoPaused);
   setPct(75); run(4);
-  CHECK(!sensorFault && !waterDemand);
+  CHECK(!sensorFault && !waterDemand && statusKnown && !soilDry);   // WET from the stop threshold
   cmd("$RAW 2800 3200 3220\n"); run(3);           // bench test input
   CHECK(testInput && rawADC[0] == 2800);
   cmd("$RAW OFF\n"); run(2); CHECK(!testInput);

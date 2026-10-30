@@ -21,7 +21,7 @@ HISTORY = 3600          # samples kept in memory (1 h at 1 Hz); the CSV keeps ev
 CSV_COLUMNS = ["pc_time", "pc_epoch_s", "source", "ms", "raw1", "raw2", "raw3", "filt1", "filt2", "filt3",
                "pct1", "pct2", "pct3", "average_pct", "calibrated", "sensor_fault", "water_needed",
                "pump_commanded", "led_on", "auto_mode", "lockout", "pulses", "hardware_verified", "paused",
-               "test_input", "dry1", "dry2", "dry3", "wet1", "wet2", "wet3", "missing_before"]
+               "test_input", "dry1", "dry2", "dry3", "wet1", "wet2", "wet3", "missing_before", "status"]
 
 
 class Station:
@@ -136,7 +136,7 @@ class Station:
                                 b(t.calibrated), b(t.sensor_fault), b(t.water_needed), b(t.pump_commanded),
                                 b(t.led_on), b(t.auto_mode), b(t.lockout), t.pulses, b(t.hardware_verified),
                                 "" if t.paused is None else b(t.paused), "" if t.test_input is None else b(t.test_input),
-                                *_refs(t.dry_ref), *_refs(t.wet_ref), missing])
+                                *_refs(t.dry_ref), *_refs(t.wet_ref), missing, t.status or ""])
             self._csv_file.flush()
 
     def _check_thresholds(self, t: Telemetry):

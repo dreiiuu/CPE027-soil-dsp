@@ -89,11 +89,12 @@ class Telemetry:
     test_input: Optional[bool] = None
     dry_ref: Optional[list] = None
     wet_ref: Optional[list] = None
+    status: Optional[str] = None  # "DRY" / "WET"; not sent while uncalibrated or faulted
     extra: dict = field(default_factory=dict)  # unknown keys from a newer firmware, kept for logging
 
     def to_dict(self) -> dict:
         d = {k: getattr(self, k) for k in ("v", "ms", "raw", "filtered_raw", "moisture_pct", "average_pct",
-                                           *BOOL_FIELDS, "pulses", "paused", "test_input", "dry_ref", "wet_ref")}
+                                           *BOOL_FIELDS, "pulses", "paused", "test_input", "dry_ref", "wet_ref", "status")}
         return d
 
 
@@ -167,10 +168,14 @@ def parse_line(line: str) -> Parsed:
         for k in ("dry_ref", "wet_ref"):
             if k in obj:
                 setattr(t, k, _triple(obj[k], k, 0, 4095, nullable=True))
+        if "status" in obj:
+            if obj["status"] not in ("DRY", "WET"):
+                raise ValueError("status must be DRY or WET")
+            t.status = obj["status"]
     except ValueError as e:
         return Parsed("bad", text=line, error=str(e))
     known = {"type", "v", "ms", "raw", "filtered_raw", "moisture_pct", "average_pct", "pulses", *BOOL_FIELDS,
-             "paused", "test_input", "dry_ref", "wet_ref"}
+             "paused", "test_input", "dry_ref", "wet_ref", "status"}
     t.extra = {k: v for k, v in obj.items() if k not in known}
     return Parsed("telemetry", telemetry=t, text=line)
 
@@ -189,5 +194,6 @@ def format_telemetry(t: Telemetry) -> str:
         b(t.hardware_verified))
     if t.paused is None:                       # firmware v1.0 line
         return line
-    return line[:-1] + ',"paused":%s,"test_input":%s,"dry_ref":%s,"wet_ref":%s}' % (
+    line = line[:-1] + ',"paused":%s,"test_input":%s,"dry_ref":%s,"wet_ref":%s}' % (
         b(t.paused), b(t.test_input), arr(t.dry_ref), arr(t.wet_ref))
+    return line if t.status is None else line[:-1] + ',"status":"%s"}' % t.status

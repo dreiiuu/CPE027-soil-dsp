@@ -38,14 +38,22 @@ def running_median(x: Sequence[float], n: int = 5) -> list:
     return out
 
 
+def median_then_ma(x: Sequence[float], n: int = 3, m: int = 5) -> list:
+    """The firmware's filter (DSP paper): 3-point running median for isolated spikes, then a
+    5-point moving-average FIR low-pass."""
+    return moving_average(running_median(x, n), m)
+
+
 def median_then_ema(x: Sequence[float], n: int = 5, alpha: float = 0.1) -> list:
-    """Two-stage filter from the CPE027 report: 5-point running median, then EMA."""
+    """Earlier design (running median 5, then EMA), kept for comparison."""
     return ema(running_median(x, n), alpha)
 
 
 FILTERS = {
+    "med3ma5": ("Median 3 + moving average 5 (same as firmware)", lambda x: median_then_ma(x, 3, 5)),
+    "ma5": ("Moving average M=5 only", lambda x: moving_average(x, 5)),
     "ma10": ("Moving average, M=10", lambda x: moving_average(x, 10)),
-    "ema25": ("EMA alpha=0.25 (same as firmware)", lambda x: ema(x, 0.25)),
+    "ema25": ("EMA alpha=0.25 (firmware v2.0)", lambda x: ema(x, 0.25)),
     "ema10": ("EMA alpha=0.10", lambda x: ema(x, 0.10)),
     "med5ema": ("Running median N=5 + EMA alpha=0.10", lambda x: median_then_ema(x, 5, 0.10)),
 }

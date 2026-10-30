@@ -20,6 +20,7 @@ sim: build
 	./build/host_sim > build/host_sim.out; rc=$$?; grep -E 'FAIL|passed' build/host_sim.out; exit $$rc
 
 firmware-check:
+	cmp $(FW)/dsp.h firmware/smart_irrigation/dsp.h   # Arduino needs its own copy; keep them identical
 	$(CXX) -std=gnu++17 -Wall -Wextra -fsyntax-only -x c++ -include Arduino.h -I $(STUBS) -I $(FW) $(FW)/soil_dsp.ino
 
 synth: build
@@ -40,7 +41,7 @@ app-test: build
 	./build/fw_host_run > build/fw_serial.txt
 	sed 's/const bool PUMP_HARDWARE_VERIFIED = false;/const bool PUMP_HARDWARE_VERIFIED = true;/' firmware/smart_irrigation/smart_irrigation.ino > build/smart_irrigation_verified.ino
 	grep -q 'PUMP_HARDWARE_VERIFIED = true;' build/smart_irrigation_verified.ino
-	$(CXX) -std=gnu++17 -O1 -Wall -Wextra -include Arduino.h -I $(STUBS) -DVERIFIED_BUILD '-DFW_FILE="../build/smart_irrigation_verified.ino"' tests/fw_host_run.cpp -o build/fw_host_verified
+	$(CXX) -std=gnu++17 -O1 -Wall -Wextra -include Arduino.h -I $(STUBS) -I firmware/smart_irrigation -DVERIFIED_BUILD '-DFW_FILE="../build/smart_irrigation_verified.ino"' tests/fw_host_run.cpp -o build/fw_host_verified
 	./build/fw_host_verified > build/fw_serial_verified.txt
 	$(PY) tests/test_irrigation_ui.py build/fw_serial.txt build/fw_serial_verified.txt
 

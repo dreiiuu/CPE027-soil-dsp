@@ -14,11 +14,17 @@ const out = process.argv[3] || 'build';
   page.on('dialog', d => d.accept());
   await page.goto(url);
   await page.waitForTimeout(2500);
+  // number panels start collapsed; the three per-sensor graphs are visible
+  const folds = await page.$$eval('details.fold', d => d.map(x => x.open));
+  if (folds.length !== 3 || folds.some(o => o)) { ok = false; errors.push(`folds not all collapsed: ${folds}`); }
+  for (const i of [0, 1, 2]) if (!(await page.isVisible('#g' + i))) { ok = false; errors.push(`graph S${i + 1} not visible`); }
   await page.click('#bA');
   await page.waitForTimeout(1500);
   const msg = await page.textContent('#cmdmsg');
   await page.waitForTimeout(25000);
   // calibration panel: candidate from the last 30 s, preview, send; then a $RAW bench test at 45 %
+  await page.click('#fold-cal > summary');
+  await page.click('#fold-sens > summary');
   await page.click('text=Use last 30 s as DRY');
   const d0 = await page.inputValue('#d0');
   await page.click('text=Send to board ($CAL)');
@@ -38,6 +44,10 @@ const out = process.argv[3] || 'build';
   const v = {};
   for (const id of ['conn', 'avg', 'pump', 'mode', 'demand', 'led']) v[id] = (await page.textContent('#' + id)).trim();
   const rows = await page.$$eval('#sens tr', r => r.length);
+  const badges = [];
+  for (const i of [0, 1, 2]) badges.push((await page.textContent('#st' + i)).trim());
+  console.log('per-sensor status:', badges.join(' '), '| soil status:', v.demand);
+  if (badges.some(b => !/^(DRY|WET)$/.test(b)) || !/^(DRY|WET)$/.test(v.demand)) { ok = false; errors.push('DRY/WET status missing'); }
   const ev = await page.textContent('#log');
   console.log('after A:', msg, '|', JSON.stringify(v), '| sensor rows', rows);
   if (v.conn !== 'LIVE' || v.avg === '--' || rows !== 3) { ok = false; errors.push('values never filled in'); }

@@ -16,7 +16,7 @@ The v2 handoff describes `Smart_Irrigation_ESP32S3_Automatic_v2.ino`, but that f
 The v2.0 in this repo was written here: v1.0 (`git show 7b90401:firmware/smart_irrigation/smart_irrigation.ino`,
 the handoff's original, SHA-256 `2b1b87c3...addf9a`) plus the behaviour the v2 handoff specifies, plus the
 raw-value tools below. The pinout, the protocol version, the 50/70 thresholds, the pulse, soak and pulse limits,
-the EMA, the fault limits and `PUMP_HARDWARE_VERIFIED=false` are unchanged. If you have the original v2 file,
+the fault limits and `PUMP_HARDWARE_VERIFIED=false` are unchanged. If you have the original v2 file,
 diff it against this one before flashing.
 
 | v2 handoff requirement | Where |
@@ -35,7 +35,7 @@ diff it against this one before flashing.
 | Addition | Why |
 |---|---|
 | `$CAL d1 d2 d3 w1 w2 w3` | Store dry/wet references from known raw readings. The dashboard proposes them from the last 30 s of filtered readings and says whether the probes have settled. No more re-capturing D/W just to fix one number. The firmware applies the same limits as D/W: no rail values, span of at least 150 counts per sensor |
-| `$RAW r1 r2 r3`, `$RAW OFF` | Bench test input. The board uses these raw values instead of the sensors, for at most 5 minutes. The real control path runs unchanged (EMA, %, thresholds, pulses, soak, lockout, LED, TFT), so the pump reaction at a chosen % can be tested without drying or flooding the soil. Flagged as `test_input` in the telemetry and as TEST INPUT on the TFT. Ended by `$RAW OFF`, `X` or the timeout |
+| `$RAW r1 r2 r3`, `$RAW OFF` | Bench test input. The board uses these raw values instead of the sensors, for at most 5 minutes. The real control path runs unchanged (filter, %, thresholds, pulses, soak, lockout, LED, TFT), so the pump reaction at a chosen % can be tested without drying or flooding the soil. Flagged as `test_input` in the telemetry and as TEST INPUT on the TFT. Ended by `$RAW OFF`, `X` or the timeout |
 | `dry_ref`, `wet_ref`, `test_input` telemetry fields | The PC can see the references the board is actually using, check its % maths, and show when a test input is active. These are additive fields; `v` stays 1 and v1.0 logs still parse |
 | `T` runs its full 1.5 s | v1.0 cut a manual pulse short when uncalibrated or at 70% or more (measured 490 ms) |
 
@@ -59,12 +59,11 @@ proven identical to the C++. The C++ is the authority.
 
 ## Mismatches and findings (decide before relying on them)
 
-1. **The report's DSP pipeline is not what the board runs.** The report title and `docs/WORKFLOW.md` describe
-   a cross-sensor median, then a 5-point running median, then an EMA with alpha 0.1. The firmware averages
-   12 ADC reads, then applies an EMA with alpha 0.25, with no median stage, and controls the pump from the
-   integer mean of the three percentages. The dashboard shows median+EMA only for comparison, on the PC.
-   Either the report describes the firmware, or the firmware changes. Do not present the PC-side filter as
-   the controller.
+1. **Resolved (v2.1): the board now runs the paper's filter.** Per sensor, once per second: a 3-point
+   running median (isolated spikes), then a 5-point moving-average FIR low-pass. The EMA 0.25 is gone. The pump
+   decides on the rounded mean of the three smoothed percentages, classified DRY/WET with hysteresis.
+   The analysis scripts in `analysis/` still compute the earlier design (cross-sensor median, running median
+   5, EMA 0.1) and still need to be switched over before the report tables are made.
 2. **Two hardware builds exist in this repo.** `firmware/soil_dsp/` (and the README's older "Hardware
    integration" table and Cirkit schematic) targets ST7789, GPIO2/1/3 with v2.0 sensors, relay GPIO20, no LED.
    It does not match the current board and is kept only as the previous iteration.
@@ -77,7 +76,7 @@ proven identical to the C++. The C++ is the authority.
    shows all three raw values.
 6. **Calibration capture with D/W is short** (20 reads in about 100 ms). Wait until the dashboard says "settled",
    or use the 30 s median and `$CAL` instead.
-7. **The average is rounded down** (integer division), so 49.7% displays as 49%.
+7. **Resolved (v2.1):** the average is now rounded, so 49.7% displays as 50%.
 8. **`$RAW` really drives the pump** once the hardware is verified. It is a bench tool: outlet into a cup,
    someone watching. Every safety rule still applies, and it ends by itself after 5 minutes.
 9. **The relay on pin 6 must trigger at 3.3 V.** With relay VCC at 5 V and active LOW, a 3.3 V HIGH may not fully

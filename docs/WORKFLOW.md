@@ -1,5 +1,12 @@
 # Final DSP thought process and workflow (three-sensor version)
 
+> **Superseded filter design (2026-10-30).** The paper's final DSP approach, which the firmware (v2.1) and the
+> dashboard now run, is per sensor: raw ADC at 1 Hz, then a 3-point running median for isolated spikes, then a
+> 5-point moving-average FIR low-pass. The output is the smoothed moisture signal, classified as DRY or WET only.
+> It is evaluated as raw vs filtered, noise reduction and response delay. The cross-sensor median / running
+> median 5 / EMA 0.1 chain below is the earlier design. `analysis/` still computes it, so do not copy its
+> numbers into the report until those scripts are switched over.
+
 The slides describe one sensor. The instructor wants three, so the DSP story changes in one place: **the first processing stage now uses the sensors against each other**, and the rest of the chain handles what the sensors share.
 
 ## The idea in one sentence

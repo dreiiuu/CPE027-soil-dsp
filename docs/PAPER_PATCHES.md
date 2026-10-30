@@ -1,5 +1,12 @@
 # Edits to the DSP report
 
+> **Superseded filter design (2026-10-30).** The paper's final DSP approach, which the firmware (v2.1) and the
+> dashboard now run, is per sensor: raw ADC at 1 Hz, then a 3-point running median for isolated spikes, then a
+> 5-point moving-average FIR low-pass. The output is the smoothed moisture signal, classified as DRY or WET only.
+> It is evaluated as raw vs filtered, noise reduction and response delay. The cross-sensor median / running
+> median 5 / EMA 0.1 chain below is the earlier design. `analysis/` still computes it, so do not copy its
+> numbers into the report until those scripts are switched over.
+
 The report's results cannot be filled in until you have measurements: every `[ ]` is a value that must come from your own logs. Nothing here is a result. What this file gives you is (1) the exact text that is now known and (2) which script output goes in which cell.
 
 ## 1. Text you can now fill in (it is in the firmware)

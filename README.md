@@ -1,11 +1,10 @@
-# Soil-moisture DSP: three capacitive sensors, median + EMA smoothing, web dashboard
+# Soil-moisture DSP: three capacitive sensors, median + moving-average smoothing, web dashboard
 
 CPE 027 DSP project: *Two-Stage Median and Exponential Smoothing of Multi-Sensor Soil Moisture Signals for Tomato Germination Monitoring* (ESP32-S3).
 
 ```
-3 capacitive sensors -> ADC (1 Hz) -> calibrated index -> cross-sensor median
-   -> 5-point running median -> EMA (alpha 0.1) -> thresholds + hysteresis -> pump / TFT / web dashboard
-                                  \-> M=10 moving average (comparison baseline, same input)
+per sensor: raw ADC (1 Hz) -> 3-point running median (spikes) -> 5-point moving average FIR (noise)
+   -> calibrated % -> average of 3 -> DRY / WET (thresholds + hysteresis) -> pump / TFT / PC dashboard
 ```
 
 ## Current build (v1.0): start here
@@ -37,7 +36,7 @@ The analysis tooling still applies: convert a session log with `software/to_anal
 | Path | What it is |
 |---|---|
 | `firmware/soil_dsp/dsp.h` | The DSP core (calibration, median3, running median, EMA, moving average, pump controller, toggle counter). No Arduino dependencies. |
-| `firmware/smart_irrigation/smart_irrigation.ino` | **Current firmware** v2.0: 3 sensors, 12x average + EMA, calibration (D/W or `$CAL`), automatic watering with pause/lockout kept in NVS, `$RAW` bench test, ILI9341 TFT, JSONL telemetry over USB. |
+| `firmware/smart_irrigation/smart_irrigation.ino` | **Current firmware** v2.0: 3 sensors, 12x average + median 3 + moving average 5, DRY/WET status, calibration (D/W or `$CAL`), automatic watering with pause/lockout kept in NVS, `$RAW` bench test, ILI9341 TFT, JSONL telemetry over USB. |
 | `software/irrigation_ui/` | **Current software UI**: PC app that reads the serial telemetry. Live dashboard, alerts, CSV log, DSP comparison, confirmed commands, simulator. |
 | `docs/INTEGRATION.md` | How hardware, firmware and software connect, and the mismatches found. |
 | `firmware/soil_dsp/soil_dsp.ino` | ESP32-S3 firmware: samples 3 sensors, runs the pipeline, drives relay/TFT, serves the dashboard, logs CSV over serial. |

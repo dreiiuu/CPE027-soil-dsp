@@ -334,6 +334,21 @@ class Analysis(unittest.TestCase):
         self.assertAlmostEqual(analysis.moving_average(x, 10)[-1], 10.0)
         self.assertAlmostEqual(analysis.ema([4.0, 8.0], 0.25)[1], 5.0)
         self.assertEqual(analysis.running_median([1, 100, 1, 1, 1], 5)[2], 1)
+        # firmware filter: the spike is removed by the 3-point median, the step is averaged over 5
+        y = analysis.median_then_ma([10, 10, 10, 90, 10, 10, 10], 3, 5)
+        self.assertEqual(y[3], 10)
+        self.assertEqual(analysis.median_then_ma([0] * 5 + [10] * 6, 3, 5)[-1], 10)
+
+    def test_sim_filter_matches_analysis(self):
+        lines = []
+        m = FirmwareModel(lines.append, seed=3)
+        raw = [2000, 2004, 2160, 1998, 2001, 2003, 1840, 2002, 2500, 2500, 2500, 2501]
+        for got, want in zip([m._smooth(0, x) for x in raw], analysis.median_then_ma(raw, 3, 5)):
+            self.assertAlmostEqual(got, want, places=3)       # float32 in the firmware model
+        for _ in range(600):
+            m.advance(100)
+        tel = [parse_line(l).telemetry for l in lines if l.startswith("{")]
+        self.assertTrue(all(t.status in ("DRY", "WET") for t in tel))
 
     def test_noise_ignores_steps(self):
         import random

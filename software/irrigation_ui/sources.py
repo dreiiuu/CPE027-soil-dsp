@@ -130,7 +130,8 @@ class FirmwareModel:
     START_WATERING_PCT, STOP_WATERING_PCT = 50, 70
     PUMP_PULSE_MS, SOAK_INTERVAL_MS, BOOT_SETTLE_MS, MAX_PULSES = 1500, 20000, 5000, 3
     TEST_INPUT_MAX_MS = 300000
-    MIN_CALIBRATION_SPAN_ADC, ADC_BAD_LOW, ADC_BAD_HIGH, EMA_ALPHA = 150, 10, 4085, 0.25
+    MIN_CALIBRATION_SPAN_ADC, ADC_BAD_LOW, ADC_BAD_HIGH = 150, 10, 4085
+    MEDIAN_POINTS, MA_POINTS = 3, 5
     AUTO_START_AFTER_CALIBRATION = True
 
     # invented sensor characteristics (counts in air / in water) for the soil model
@@ -145,6 +146,8 @@ class FirmwareModel:
         self.dry = list(self.AIR) if calibrated else [-1, -1, -1]
         self.wet = list(self.WATER) if calibrated else [-1, -1, -1]
         self.raw, self.filt, self.finit = [0, 0, 0], [0.0, 0.0, 0.0], False
+        self.med_buf, self.ma_buf = [[], [], []], [[], [], []]   # dsp::RunningMedian<3>, dsp::MovingAverage<5>
+        self.soil_dry, self.status_known = False, False
         self.fault = self.auto = self.pump = self.manual = self.demand = self.led = False
         self.paused = self.lockout = False            # "NVS"
         self.led_test, self.led_test_ms = False, 0
@@ -188,9 +191,18 @@ class FirmwareModel:
     def sample(self):
         for i in range(3):
             self.raw[i] = self.test_raw[i] if self.test else self._counts(i)
-            self.filt[i] = self.raw[i] if not self.finit else self.filt[i] + self.EMA_ALPHA * (self.raw[i] - self.filt[i])
+            if not self.finit:
+                self.med_buf[i], self.ma_buf[i] = [], []
+            self.filt[i] = self._smooth(i, self.raw[i])
         self.finit = True
         self.fault = any(r <= self.ADC_BAD_LOW or r >= self.ADC_BAD_HIGH for r in self.raw)
+
+    def _smooth(self, i, x):
+        """3-point running median, then 5-point moving average (same as dsp.h, incl. start-up)."""
+        self.med_buf[i] = (self.med_buf[i] + [float(x)])[-self.MEDIAN_POINTS:]
+        w = sorted(self.med_buf[i])
+        self.ma_buf[i] = (self.ma_buf[i] + [w[len(w) // 2]])[-self.MA_POINTS:]
+        return _f32(sum(self.ma_buf[i]) / len(self.ma_buf[i]))
 
     def cal_valid(self):
         return all(self.dry[i] >= 0 and self.wet[i] >= 0 and abs(self.dry[i] - self.wet[i]) >= self.MIN_CALIBRATION_SPAN_ADC
@@ -205,7 +217,18 @@ class FirmwareModel:
     def avg(self):
         if not self.cal_valid() or self.fault:
             return -1
-        return (self.pct(0) + self.pct(1) + self.pct(2)) // 3
+        return int(_c_lround((self.pct(0) + self.pct(1) + self.pct(2)) / 3.0))
+
+    def update_status(self):
+        p = self.avg()
+        if p < 0:
+            self.status_known = False
+        elif not self.status_known:
+            self.soil_dry, self.status_known = p < self.START_WATERING_PCT, True
+        elif p < self.START_WATERING_PCT:
+            self.soil_dry = True
+        elif p >= self.STOP_WATERING_PCT:
+            self.soil_dry = False
 
     def auto_allowed(self):
         return (self.AUTO_START_AFTER_CALIBRATION and self.hw and self.cal_valid() and not self.fault
@@ -241,7 +264,8 @@ class FirmwareModel:
         if not self.test:
             for i in range(3):
                 self.raw[i] = measured[i]
-                self.filt[i] = float(measured[i])
+                self.med_buf[i], self.ma_buf[i] = [], []
+                self.filt[i] = self._smooth(i, measured[i])
             self.finit, self.fault = True, False
         self.emit("#EVENT dry_reference_saved" if dry else "#EVENT wet_reference_saved")
         self.store_cal(measured if dry else None, None if dry else measured)
@@ -298,7 +322,8 @@ class FirmwareModel:
                          calibrated=self.cal_valid(), sensor_fault=self.fault, water_needed=self.demand,
                          pump_commanded=self.pump, led_on=self.led, auto_mode=self.auto, lockout=self.lockout,
                          pulses=self.pulses, hardware_verified=self.hw, paused=self.paused, test_input=self.test,
-                         dry_ref=ref(self.dry), wet_ref=ref(self.wet))
+                         dry_ref=ref(self.dry), wet_ref=ref(self.wet),
+                         status=("DRY" if self.soil_dry else "WET") if self.status_known else None)
 
     def end_test(self, why):
         if self.test:
@@ -405,6 +430,7 @@ class FirmwareModel:
         self.emit("#EVENT SYNTHETIC_SIMULATOR (not a real board)")
         self.boot_ms = self.ms
         self.sample()
+        self.update_status()
         self.auto = self.auto_allowed()
         self.emit("#EVENT esp32_s3_irrigation_v2_boot")
         self.emit("#EVENT led_startup_test_complete")
@@ -433,11 +459,18 @@ class FirmwareModel:
         if self.ms - self.last_sample >= 1000:
             self.last_sample = self.ms
             self.sample()
+            self.update_status()
             self.control()
             self.update_led()
             self.emit(format_telemetry(self.telemetry()))
         else:
             self.update_led()
+
+
+def _f32(x):
+    """Round to IEEE single precision, like the firmware's float."""
+    import struct
+    return struct.unpack("f", struct.pack("f", x))[0]
 
 
 def _c_lround(x):

@@ -8,7 +8,7 @@ pump command, LED, AUTO/MANUAL/LOCKOUT, pulse count, faults, plus logging and DS
 ![dashboard](../docs/img/app_desktop.png)
 
 ```
-capacitive sensors -> ESP32-S3 (12x ADC average, EMA 0.25, calibration, pump safety logic)
+capacitive sensors -> ESP32-S3 (12x ADC average, median 3 + moving average 5, calibration, pump safety logic)
                         |  USB serial, 115200, one JSON line per second + "#EVENT" lines
                         v
                irrigation_ui (this folder) -> http://127.0.0.1:8765/  + CSV log with PC timestamps
@@ -62,12 +62,13 @@ Options: `--http-port`, `--log-dir` (default `logs/`), `--no-log`, `--start-pct/
 | Area | Content |
 |---|---|
 | Header / alerts | LIVE / NO DATA / DISCONNECTED, port, last record time. Alerts in order of severity: disconnected, no data, protocol mismatch, sensor fault, lockout, uncalibrated, pump hardware not verified, threshold mismatch, water needed, AUTO off, missing records. |
-| Cards | Average %, water demand, pump **command**, mode, pulses x/3, LED, hardware-verified flag |
-| Sensors | Board pin label, raw, filtered, %, sample-to-sample noise, glitches (Hampel, 5 min), raw drift per hour with the pump idle |
-| Moisture trend | Average and S1-S3 % with the start/stop thresholds, pump-command periods shaded. 2/10/60 min |
-| DSP comparison | One sensor's raw counts vs the firmware EMA vs a dashboard filter: moving average M=10, EMA 0.10, running median 5 + EMA 0.10 (the report's two-stage filter), EMA 0.25. Detected glitches are marked |
+| Cards | Average %, soil status (DRY/WET), pump **command**, mode, pulses x/3, LED, hardware-verified flag |
+| Moisture per sensor | One graph per sensor: raw % vs the board's smoothed %, start/stop thresholds, pump-command periods shaded, and a DRY/WET badge per sensor. 2/10/60 min |
+| Sensors (collapsed) | Board pin label, raw, filtered, %, sample-to-sample noise, glitches (Hampel, 5 min), raw drift per hour with the pump idle |
+| Moisture trend (collapsed) | Average and S1-S3 % with the start/stop thresholds, pump-command periods shaded. 2/10/60 min |
+| DSP comparison (collapsed) | One sensor's raw counts vs the firmware's smoothed counts vs a dashboard filter: median 3 + moving average 5 (same as the firmware), moving average 5 or 10, EMA 0.10, running median 5 + EMA 0.10, EMA 0.25 (firmware v2.0). Detected glitches are marked |
 | Analysis | Drying rate (%/h, from samples at least 60 s after the last pulse), how long the reading takes to rise 2 points after each pulse, probe spread, warnings (probes disagree, stuck at 0/100 %, noisy, one probe drifting) |
-| Calibration from raw values | The references the board uses, the median of the last 30 s of filtered readings per sensor (with a settled / still moving indicator), editable new DRY/WET values, the live % those values would give, and a raw-to-% table at 0/25/50/70/100%. **Send to board** stores them with `$CAL` |
+| Calibration from raw values (collapsed) | The references the board uses, the median of the last 30 s of filtered readings per sensor (with a settled / still moving indicator), editable new DRY/WET values, the live % those values would give, and a raw-to-% table at 0/25/50/70/100%. **Send to board** stores them with `$CAL` |
 | Bench test input | A slider for a target %, converted to raw counts per sensor with the board's references (or type the raw values). **Start test input** sends `$RAW` (5 min maximum), **End test input** sends `$RAW OFF`. Rows turn amber and the TFT says TEST INPUT while it runs |
 | Controls | D, W, A, T, `$CAL` and `$RAW` need a confirmation dialog, and the server refuses them without it. X (stop and pause) and End test never need one. All disabled during replay |
 | Events / Session | `#EVENT` lines from the board, app and operator actions, record counts, missing records, rejected lines, board restarts, CSV download |
@@ -99,14 +100,15 @@ Taken unchanged from the handoff, section 7. The firmware is the authority.
 | `v` | int | protocol version. The app accepts `1` only and shows a protocol alert otherwise |
 | `ms` | int | board uptime in ms, **not** a date. The app adds the PC time |
 | `raw` | 3 x int 0-4095 | average of 12 ADC reads per sensor |
-| `filtered_raw` | 3 x int | EMA (alpha 0.25) of `raw` |
+| `filtered_raw` | 3 x int | `raw` after a 3-point running median and a 5-point moving average |
 | `moisture_pct` | 3 x (int 0-100 or null) | relative to the D/W references. null when uncalibrated or on a fault |
-| `average_pct` | int or null | integer mean of the three |
+| `average_pct` | int or null | mean of the three, rounded |
 | `calibrated`, `sensor_fault`, `water_needed`, `pump_commanded`, `led_on`, `auto_mode`, `lockout`, `hardware_verified` | bool | as named. `pump_commanded` is the software command, not measured flow |
 | `pulses` | int | pump pulses in the current watering cycle (max 3) |
 | `paused` | bool | v2: AUTO deliberately paused (X, sensor fault, dry calibration); survives a restart |
 | `test_input` | bool | v2: a `$RAW` test input replaces the sensor readings |
 | `dry_ref`, `wet_ref` | 3 x (int or null) | v2: the stored raw references (null = not set) |
+| `status` | "DRY" or "WET" | v2.1: soil status from `average_pct`. DRY below the start threshold, WET from the stop threshold, unchanged in between. Not sent while uncalibrated or on a sensor fault |
 
 The v2 fields are optional for the parser, so logs from firmware v1.0 still load.
 

@@ -1,6 +1,6 @@
 /*
   SMART SOIL IRRIGATION - ESP32-S3 N16R8
-  Version 2.0 - automatic, supervised prototype
+  Version 2.1 - automatic, supervised prototype (v2.1: DSP-paper filter, DRY/WET status)
 
   Board header labels: Sensor 1=1, Sensor 2=2, Sensor 3=3
   LED=5 (220-470 ohm series resistor), Relay IN=6
@@ -26,6 +26,12 @@
   - Calibration can be typed in from known raw readings ($CAL), and raw test values can be
     injected for bench tests of the pump logic ($RAW). Both are reported in the telemetry.
 
+  Signal processing (as in the DSP paper), per sensor, once per second:
+    raw ADC reading (12-read burst average) -> 3-point running median (isolated spikes)
+    -> 5-point moving average FIR low-pass (short-term random fluctuations) -> smoothed reading.
+  Soil status is DRY or WET only: DRY below START_WATERING_PCT, WET once STOP_WATERING_PCT
+  is reached; in between it keeps its last state (hysteresis).
+
   Serial 115200. Single-letter commands (no newline needed):
     D = save dry-soil references for all three sensors (also pauses AUTO)
     W = save wet-soil references for all three sensors (arms AUTO if calibration is valid)
@@ -50,6 +56,7 @@
 #include <Preferences.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
+#include "dsp.h"   // RunningMedian, MovingAverage (same file as firmware/soil_dsp/dsp.h)
 
 // -------- HARDWARE: LABELS PRINTED ON ESP32-S3 BOARD --------
 const uint8_t SENSOR_PINS[3] = {1, 2, 3};
@@ -87,7 +94,8 @@ const uint8_t MAX_PULSES = 3;
 const int MIN_CALIBRATION_SPAN_ADC = 150;
 const int ADC_BAD_LOW = 10;
 const int ADC_BAD_HIGH = 4085;
-const float EMA_ALPHA = 0.25f;
+const uint8_t MEDIAN_POINTS = 3;   // isolated-spike removal
+const uint8_t MA_POINTS = 5;       // moving-average FIR low-pass
 
 Adafruit_ILI9341 tft(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCK, TFT_RST);
 Preferences prefs;
@@ -97,6 +105,8 @@ const char* WET_KEYS[3] = {"wet0", "wet1", "wet2"};
 int rawADC[3] = {0, 0, 0};
 float filteredADC[3] = {0, 0, 0};
 bool filterInitialized = false;
+dsp::RunningMedian<MEDIAN_POINTS> spikeFilter[3];
+dsp::MovingAverage<MA_POINTS> smoothFilter[3];
 int dryADC[3] = {-1, -1, -1};
 int wetADC[3] = {-1, -1, -1};
 
@@ -107,6 +117,8 @@ bool safetyLockout = false;    // persistent
 bool pumpCommandOn = false;
 bool manualPulse = false;
 bool waterDemand = false;
+bool soilDry = false;          // DRY/WET status with hysteresis (valid only when statusKnown)
+bool statusKnown = false;
 bool ledTestActive = false;
 bool ledState = false;
 bool testInput = false;
@@ -173,8 +185,8 @@ int analogAverage(uint8_t pin, int samples) {
 void sampleSensors() {
   for (int i = 0; i < 3; i++) {
     rawADC[i] = testInput ? testRaw[i] : analogAverage(SENSOR_PINS[i], 12);
-    if (!filterInitialized) filteredADC[i] = rawADC[i];
-    else filteredADC[i] += EMA_ALPHA * (rawADC[i] - filteredADC[i]);
+    if (!filterInitialized) { spikeFilter[i].reset(); smoothFilter[i].reset(); }
+    filteredADC[i] = smoothFilter[i].update(spikeFilter[i].update(rawADC[i]));
   }
   filterInitialized = true;
 
@@ -204,7 +216,16 @@ int sensorPercent(int i) {
 
 int averagePercent() {
   if (!calibrationValid() || sensorFault) return -1;
-  return (sensorPercent(0) + sensorPercent(1) + sensorPercent(2)) / 3;
+  return (int)lroundf((sensorPercent(0) + sensorPercent(1) + sensorPercent(2)) / 3.0f);
+}
+
+// DRY/WET with hysteresis on the average of the three smoothed readings.
+void updateSoilStatus() {
+  int pct = averagePercent();
+  if (pct < 0) { statusKnown = false; return; }
+  if (!statusKnown) { soilDry = pct < START_WATERING_PCT; statusKnown = true; }
+  else if (pct < START_WATERING_PCT) soilDry = true;
+  else if (pct >= STOP_WATERING_PCT) soilDry = false;
 }
 
 bool autoAllowed() {
@@ -261,7 +282,11 @@ void captureCalibration(bool dry) {
     }
   }
   if (!testInput) {
-    for (int i = 0; i < 3; i++) { rawADC[i] = measured[i]; filteredADC[i] = measured[i]; }
+    for (int i = 0; i < 3; i++) {
+      rawADC[i] = measured[i];
+      spikeFilter[i].reset(); smoothFilter[i].reset();
+      filteredADC[i] = smoothFilter[i].update(spikeFilter[i].update(measured[i]));
+    }
     filterInitialized = true;
     sensorFault = false;
   }
@@ -376,7 +401,7 @@ void updateDisplay() {
     snprintf(buf, sizeof(buf), "CALIBRATE");
     drawValue(3, 72, 135, 238, 17, 2, buf, ILI9341_YELLOW);
   } else {
-    snprintf(buf, sizeof(buf), "%d%%", averagePercent());
+    snprintf(buf, sizeof(buf), "%d%% %s", averagePercent(), soilDry ? "DRY" : "WET");
     drawValue(3, 72, 135, 238, 17, 2, buf,
               waterDemand ? ILI9341_RED : ILI9341_GREEN);
   }
@@ -391,8 +416,7 @@ void updateDisplay() {
   else if (sensorFault) snprintf(buf, sizeof(buf), "CHECK SENSOR POWER/AO");
   else if (!calibrationValid()) snprintf(buf, sizeof(buf), "SEND D THEN W");
   else if (safetyLockout) snprintf(buf, sizeof(buf), "MAX PULSES; SEND X");
-  else if (waterDemand) snprintf(buf, sizeof(buf), "DRY  PULSES %d/%d", pulsesUsed, MAX_PULSES);
-  else snprintf(buf, sizeof(buf), "OK    PULSES %d/%d", pulsesUsed, MAX_PULSES);
+  else snprintf(buf, sizeof(buf), "%s  PULSES %d/%d", soilDry ? "DRY" : "WET", pulsesUsed, MAX_PULSES);
   drawValue(6, 65, 219, 245, 10, 1, buf, ILI9341_YELLOW);
 }
 
@@ -445,6 +469,7 @@ void emitTelemetry() {
   Serial.print(",\"test_input\":"); Serial.print(testInput ? "true" : "false");
   Serial.print(",\"dry_ref\":"); printRefs(dryADC);
   Serial.print(",\"wet_ref\":"); printRefs(wetADC);
+  if (statusKnown) { Serial.print(",\"status\":"); Serial.print(soilDry ? "\"DRY\"" : "\"WET\""); }
   Serial.println("}");
 }
 
@@ -456,7 +481,7 @@ void showHelp() {
 void endTestInput(const char* why) {
   if (!testInput) return;
   testInput = false;
-  filterInitialized = false;   // restart the EMA from the real sensors
+  filterInitialized = false;   // restart the filters from the real sensors
   Serial.print("#EVENT test_input_off_");
   Serial.println(why);
 }
@@ -496,7 +521,7 @@ void handleLine(const char* line) {
     int v[3];
     if (!parseInts(line + 4, v, 3)) { Serial.println("#EVENT raw_rejected_need_3_values_0_4095"); return; }
     for (int i = 0; i < 3; i++) testRaw[i] = v[i];
-    if (!testInput) filterInitialized = false;   // start the EMA at the test values
+    if (!testInput) filterInitialized = false;   // start the filters at the test values
     testInput = true;
     testInputMs = millis();
     Serial.println("#EVENT test_input_on");
@@ -593,6 +618,7 @@ void setup() {
 
   settleFromMs = millis();
   sampleSensors();
+  updateSoilStatus();
   autoEnabled = autoAllowed();
   updateDisplay();
   Serial.println("#EVENT esp32_s3_irrigation_v2_boot");
@@ -618,6 +644,7 @@ void loop() {
   if (now - lastSampleMs >= SAMPLE_INTERVAL_MS) {
     lastSampleMs = now;
     sampleSensors();
+    updateSoilStatus();
     controlWatering();
     updateLED();
     updateDisplay();
