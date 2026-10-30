@@ -56,7 +56,6 @@
 #include <Preferences.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
-#include "dsp.h"   // RunningMedian, MovingAverage (same file as firmware/soil_dsp/dsp.h)
 
 // -------- HARDWARE: LABELS PRINTED ON ESP32-S3 BOARD --------
 const uint8_t SENSOR_PINS[3] = {1, 2, 3};
@@ -105,8 +104,39 @@ const char* WET_KEYS[3] = {"wet0", "wet1", "wet2"};
 int rawADC[3] = {0, 0, 0};
 float filteredADC[3] = {0, 0, 0};
 bool filterInitialized = false;
-dsp::RunningMedian<MEDIAN_POINTS> spikeFilter[3];
-dsp::MovingAverage<MA_POINTS> smoothFilter[3];
+
+// N-point running median (median of what is there until the window fills).
+template <uint8_t N>
+struct RunningMedian {
+  float buf[N]; uint8_t count = 0, head = 0;
+  void reset() { count = 0; head = 0; }
+  float update(float x) {
+    buf[head] = x; head = (head + 1) % N; if (count < N) count++;
+    float t[N];
+    for (uint8_t i = 0; i < count; i++) t[i] = buf[i];
+    for (uint8_t i = 1; i < count; i++) {          // insertion sort, N is tiny
+      float v = t[i]; uint8_t j = i;
+      while (j > 0 && t[j - 1] > v) { t[j] = t[j - 1]; j--; }
+      t[j] = v;
+    }
+    return t[count / 2];
+  }
+};
+
+// M-point moving average FIR (average of what is there until the window fills).
+template <uint8_t M>
+struct MovingAverage {
+  float buf[M]; uint8_t count = 0, head = 0; float sum = 0;
+  void reset() { count = 0; head = 0; sum = 0; }
+  float update(float x) {
+    if (count == M) sum -= buf[head]; else count++;
+    buf[head] = x; sum += x; head = (head + 1) % M;
+    return sum / (float)count;
+  }
+};
+
+RunningMedian<MEDIAN_POINTS> spikeFilter[3];
+MovingAverage<MA_POINTS> smoothFilter[3];
 int dryADC[3] = {-1, -1, -1};
 int wetADC[3] = {-1, -1, -1};
 
