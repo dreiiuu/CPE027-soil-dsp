@@ -20,7 +20,7 @@
   FAST RESPONSE UPDATE (v2.3)
   - Moisture control samples every 100 ms (10 times per second).
   - The moving-average filter is reduced from 5 to 3 samples to reduce lag.
-  - When the filtered three-sensor average reaches 70%, the pump is switched OFF
+  - When the filtered three-sensor average reaches 98% (STOP_WATERING_PCT), the pump is switched OFF
     during that control pass, without waiting for the pulse or soak timer.
   - Serial telemetry remains at 1-second intervals.
 
@@ -82,8 +82,8 @@ const bool PUMP_HARDWARE_VERIFIED = true;
 const bool AUTO_START_AFTER_CALIBRATION = true;
 
 // -------- IRRIGATION SETTINGS --------
-const int START_WATERING_PCT = 50;
-const int STOP_WATERING_PCT = 70;
+const int START_WATERING_PCT = 60;   // DRY below 60 % -> water
+const int STOP_WATERING_PCT = 98;    // WET from 98 % -> stop
 
 const unsigned long SAMPLE_INTERVAL_MS = 100UL;
 const unsigned long UI_UPDATE_INTERVAL_MS = 1000UL;
@@ -1433,7 +1433,7 @@ void loop() {
   }
 
   // FAST CONTROL LOOP:
-  // Read sensors and evaluate the 70% stop threshold every 100 ms.
+  // Read sensors and evaluate the 98% stop threshold every 100 ms.
   if (
     now - lastSampleMs >= SAMPLE_INTERVAL_MS
   ) {

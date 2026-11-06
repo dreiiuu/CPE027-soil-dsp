@@ -79,7 +79,7 @@ int main() {
   CHECK(sensorFault && !autoPaused && sensorPercent(2) < 0 && averagePercent() == 40 && waterDemand);
   g_adc[1] = 4095; run(3);                        // S1 at the rail too: no usable sensor
   CHECK(averagePercent() < 0 && !waterDemand && !autoPaused && !statusKnown);
-  setPct(75); run(4);
+  setPct(100); run(4);
   CHECK(!sensorFault && !waterDemand && statusKnown && !soilDry);   // WET from the stop threshold
   cmd("$RAW 2800 3200 3220\n"); run(3);           // bench test input
   CHECK(testInput && rawADC[0] == 2800);
@@ -133,8 +133,8 @@ int main() {
   reboot(); run(3);
   CHECK(autoPaused && !autoEnabled);              // pause survives a reboot too
 
-  // manual pulse runs its full 1.5 s even at 75 % (v1 cut it short)
-  setPct(75); run(3);
+  // manual pulse runs its full 1.5 s even at 100 % (v1 cut it short)
+  setPct(100); run(3);
   longestOn = 0; cmd("T"); run(3);
   CHECK(longestOn >= PUMP_PULSE_MS - 10 && switchOns == 4);
 
@@ -149,7 +149,7 @@ int main() {
   unsigned long boot = settleFromMs;
   run(4); CHECK(switchOns == 4);
   run(3); CHECK(switchOns == 5 && onSince - boot >= BOOT_SETTLE_MS);
-  setPct(75); run(25);                            // watering worked: demand cleared, no lockout
+  setPct(100); run(25);                            // watering worked: demand cleared, no lockout
   CHECK(!waterDemand && !safetyLockout && pulsesUsed == 0 && switchOns == 5);
 
   // bench test with $RAW: pretend 45 % without touching the soil
@@ -162,13 +162,13 @@ int main() {
 
   // sensor fault is only a warning: AUTO keeps running on the remaining sensor
   g_adc[1] = 4095; run(3);                        // S1 at the rail (S2 is not used)
-  CHECK(sensorFault && !autoPaused && autoEnabled && averagePercent() == 75 && !waterDemand);
+  CHECK(sensorFault && !autoPaused && autoEnabled && averagePercent() == 100 && !waterDemand);
   g_adc[3] = countAt(2, 40); run(4);              // S3 alone says dry: it waters on S3
   CHECK(waterDemand && switchOns == 7);
   g_adc[3] = 0; run(3);                           // no usable sensor: pump off, nothing paused
   CHECK(averagePercent() < 0 && !waterDemand && !pumpCommandOn && autoEnabled && !autoPaused);
-  setPct(75); run(3);                             // sensors back: carries on by itself, no A needed
-  CHECK(!sensorFault && autoEnabled && averagePercent() == 75 && !waterDemand);
+  setPct(100); run(3);                             // sensors back: carries on by itself, no A needed
+  CHECK(!sensorFault && autoEnabled && averagePercent() == 100 && !waterDemand);
   std::fflush(stdout);
   if (failures) std::fprintf(stderr, "%d verified-build check(s) FAILED\n", failures);
   return failures ? 1 : 0;

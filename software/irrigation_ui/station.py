@@ -26,7 +26,7 @@ CSV_COLUMNS = ["pc_time", "pc_epoch_s", "source", "ms", "raw1", "raw2", "raw3", 
 
 class Station:
     def __init__(self, source_kind: str, synthetic: bool, log_dir: Optional[Path],
-                 start_pct: int = 50, stop_pct: int = 70, clock=time.time):
+                 start_pct: int = 60, stop_pct: int = 98, clock=time.time):
         self.clock = clock
         self.lock = threading.Lock()
         self.source_kind, self.synthetic = source_kind, synthetic

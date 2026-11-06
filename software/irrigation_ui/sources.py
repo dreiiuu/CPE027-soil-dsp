@@ -127,7 +127,7 @@ class FirmwareModel:
     the real firmware's PC build through it and compares. The soil model is invented: it only
     exists so the dashboard has something plausible to show. All its output is SYNTHETIC.
     """
-    START_WATERING_PCT, STOP_WATERING_PCT = 50, 70
+    START_WATERING_PCT, STOP_WATERING_PCT = 60, 98
     PUMP_PULSE_MS, SOAK_INTERVAL_MS, BOOT_SETTLE_MS, MAX_PULSES = 1500, 20000, 5000, 3
     TEST_INPUT_MAX_MS = 300000
     MIN_CALIBRATION_SPAN_ADC, ADC_BAD_LOW, ADC_BAD_HIGH = 150, 10, 4085

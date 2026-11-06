@@ -53,9 +53,9 @@ details.fold>summary:hover{color:var(--fg)}
 <div class="row"><div class="card" style="flex-basis:100%">
   <h2>Moisture per sensor: raw vs smoothed <select id="win"><option value="120">2 min</option><option value="600" selected>10 min</option><option value="3600">60 min</option></select></h2>
   <div class="sgrid">
-    <div><div class="shead">S1 <span id="st0" class="pill">--</span></div><canvas id="g0"></canvas></div>
-    <div><div class="shead">S2 <span id="st1" class="pill">--</span></div><canvas id="g1"></canvas></div>
-    <div><div class="shead">S3 <span id="st2" class="pill">--</span></div><canvas id="g2"></canvas></div>
+    <div><div class="shead">S1 <span id="st0" class="pill">--</span> <small id="gu0" style="color:#93a08e;font-weight:normal"></small></div><canvas id="g0"></canvas></div>
+    <div><div class="shead">S2 <span id="st1" class="pill">--</span> <small id="gu1" style="color:#93a08e;font-weight:normal"></small></div><canvas id="g1"></canvas></div>
+    <div><div class="shead">S3 <span id="st2" class="pill">--</span> <small id="gu2" style="color:#93a08e;font-weight:normal"></small></div><canvas id="g2"></canvas></div>
   </div>
   <div class="leg"><span><i class="sw" style="background:#7d877a"></i>raw</span><span><i class="sw" style="background:var(--g);height:4px"></i>smoothed (median 3 + moving average 3, on the board)</span>
   <span><i class="sw" style="background:var(--r)"></i>start threshold</span><span><i class="sw" style="background:var(--b)"></i>stop threshold</span><span><i class="sw" style="background:rgba(224,160,64,.35);height:10px"></i>pump commanded</span></div>
@@ -272,9 +272,13 @@ function draw(){
   const th=S.thresholds,t=S.t,refs=t&&t.dry_ref&&t.wet_ref,raw=sl(H.raw),pump=sl(H.pump),xs=sl(H.pc);
   for(let i=0;i<3;i++){
     const st=soilStatus(H.pct.map(p=>p[i]),th),b=$('st'+i);b.textContent=st||'--';b.className='pill '+(st==='DRY'?'dry':st==='WET'?'wet':'');
-    plot($('g'+i),{x:xs,bands:pump,empty:usedS(i)?'calibrate first (D then W, or $CAL)':'S'+(i+1)+': shown only, not in average (calibrate it to see %)',
+    // % (0-100, with the thresholds) when the sensor has a %; otherwise its raw ADC counts, so the graph always has values
+    const hasPct=pct.some(p=>p[i]!=null),filt=sl(H.filt);
+    if(hasPct)plot($('g'+i),{x:xs,lo:0,hi:100,bands:pump,
       hlines:[{v:th.start_pct,c:'#e06c5a'},{v:th.stop_pct,c:'#6fa8dc'}],
-      series:[{y:raw.map(r=>refs?pctOf(r[i],t.dry_ref[i],t.wet_ref[i]):null),c:'#7d877a',w:1},{y:pct.map(p=>p[i]),c:'#7fbf6a',w:2.4}]})}
+      series:[{y:raw.map(r=>refs?pctOf(r[i],t.dry_ref[i],t.wet_ref[i]):null),c:'#7d877a',w:1},{y:pct.map(p=>p[i]),c:'#7fbf6a',w:2.4}]});
+    else plot($('g'+i),{x:xs,bands:pump,series:[{y:raw.map(r=>r[i]),c:'#7d877a',w:1},{y:filt.map(r=>r&&r[i]),c:'#7fbf6a',w:2.4}]});
+    $('gu'+i).textContent=hasPct?'%':'ADC counts (no % yet: calibrate D then W)'}
   plot($('c1'),{x:sl(H.pc),lo:0,hi:100,bands:sl(H.pump),empty:'no calibrated percentages yet (send D then W)',
     hlines:[{v:S.thresholds.start_pct,c:'#e06c5a'},{v:S.thresholds.stop_pct,c:'#6fa8dc'}],
     series:[{y:pct.map(p=>p[0]),c:'#a9c3e8',w:1},{y:pct.map(p=>p[1]),c:'#e8c3a9',w:1},{y:pct.map(p=>p[2]),c:'#c3a9e8',w:1},{y:sl(H.avg),c:'#7fbf6a',w:2.4}]});
