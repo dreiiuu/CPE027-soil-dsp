@@ -1,16 +1,12 @@
 /*
   SMART SOIL IRRIGATION - ESP32-S3 N16R8
-  Version 2.3 - fast moisture monitoring and immediate threshold stop
+  Version 2.4 - fast moisture monitoring and immediate threshold stop, no TFT
 
   HARDWARE PINS
   Sensors: GPIO 1, 2, 3
   LED: GPIO 6
   Relay IN: GPIO 5
-  TFT RESET: GPIO 8
-  TFT DC: GPIO 9
-  TFT CS: GPIO 10
-  TFT MOSI: GPIO 11
-  TFT SCK: GPIO 12
+  No TFT display: the PC dashboard (USB serial) shows the system.
 
   IMPORTANT:
   - Pump positive connects to relay NO.
@@ -26,7 +22,10 @@
   - The moving-average filter is reduced from 5 to 3 samples to reduce lag.
   - When the filtered three-sensor average reaches 70%, the pump is switched OFF
     during that control pass, without waiting for the pulse or soak timer.
-  - TFT refresh and serial telemetry remain at 1-second intervals.
+  - Serial telemetry remains at 1-second intervals.
+
+  v2.4: the TFT display was removed from the hardware. Its code and the Adafruit
+  libraries are gone; GPIO 8-12 are free.
   - Actual pump/relay stopping time must be measured.
 
   COMMANDS
@@ -50,20 +49,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <Preferences.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_ILI9341.h>
 
 // -------- HARDWARE PINS --------
 const uint8_t SENSOR_PINS[3] = {1, 2, 3};
 
 const uint8_t LED_PIN = 6;
 const uint8_t RELAY_PIN = 5;
-
-const uint8_t TFT_RST = 8;
-const uint8_t TFT_DC = 9;
-const uint8_t TFT_CS = 10;
-const uint8_t TFT_MOSI = 11;
-const uint8_t TFT_SCK = 12;
 
 // -------- RELAY CONFIGURATION --------
 // true = relay activates when GPIO is LOW
@@ -96,14 +87,6 @@ const uint8_t MEDIAN_POINTS = 3;
 const uint8_t MA_POINTS = 3;
 
 // -------- OBJECTS --------
-Adafruit_ILI9341 tft(
-  TFT_CS,
-  TFT_DC,
-  TFT_MOSI,
-  TFT_SCK,
-  TFT_RST
-);
-
 Preferences prefs;
 
 const char* DRY_KEYS[3] = {"dry0", "dry1", "dry2"};
@@ -231,10 +214,6 @@ unsigned long testInputMs = 0;
 char lineBuf[64];
 uint8_t lineLen = 0;
 bool lineMode = false;
-
-// -------- DISPLAY CACHE --------
-char fieldCache[7][48] = {{0}};
-uint16_t colorCache[7] = {0};
 
 // =====================================================
 // RELAY DIAGNOSTIC
@@ -739,247 +718,6 @@ void updateLED() {
   digitalWrite(
     LED_PIN,
     shouldLight ? HIGH : LOW
-  );
-}
-
-// =====================================================
-// TFT DISPLAY
-// =====================================================
-
-void drawValue(
-  int id,
-  int x,
-  int y,
-  int width,
-  int height,
-  int fontSize,
-  const char* text,
-  uint16_t color
-) {
-
-  if (
-    strcmp(fieldCache[id], text) == 0 &&
-    colorCache[id] == color
-  ) {
-    return;
-  }
-
-  tft.fillRect(
-    x, y, width, height,
-    ILI9341_BLACK
-  );
-
-  tft.setCursor(x, y);
-  tft.setTextSize(fontSize);
-  tft.setTextColor(color);
-  tft.print(text);
-
-  strncpy(
-    fieldCache[id],
-    text,
-    sizeof(fieldCache[id]) - 1
-  );
-
-  fieldCache[id][sizeof(fieldCache[id]) - 1] = '\0';
-
-  colorCache[id] = color;
-}
-
-void initDisplay() {
-
-  tft.begin();
-
-  tft.setRotation(1);
-
-  tft.fillScreen(ILI9341_BLACK);
-
-  tft.setTextColor(ILI9341_CYAN);
-  tft.setTextSize(2);
-
-  tft.setCursor(8, 8);
-  tft.print("SMART IRRIGATION");
-
-  tft.drawFastHLine(
-    8, 31, 304,
-    ILI9341_DARKCYAN
-  );
-
-  tft.setTextColor(ILI9341_WHITE);
-
-  tft.setCursor(8, 43);
-  tft.print("S1:");
-
-  tft.setCursor(8, 73);
-  tft.print("S2:");
-
-  tft.setCursor(8, 103);
-  tft.print("S3:");
-
-  tft.setCursor(8, 135);
-  tft.print("AVG:");
-
-  tft.setCursor(8, 169);
-  tft.print("PUMP:");
-
-  tft.setTextSize(1);
-
-  tft.setCursor(8, 199);
-  tft.print("MODE:");
-
-  tft.setCursor(8, 219);
-  tft.print("INFO:");
-}
-
-void updateDisplay() {
-
-  char buf[48];
-
-  for (int i = 0; i < 3; i++) {
-
-    int pct = sensorPercent(i);
-
-    if (pct < 0) {
-      snprintf(
-        buf, sizeof(buf),
-        "RAW %4d",
-        rawADC[i]
-      );
-    } else {
-      snprintf(
-        buf, sizeof(buf),
-        "%3d%%  raw %4d",
-        pct, rawADC[i]
-      );
-    }
-
-    drawValue(
-      i,
-      60,
-      43 + i * 30,
-      250,
-      17,
-      2,
-      buf,
-      testInput ? ILI9341_YELLOW : ILI9341_WHITE
-    );
-  }
-
-  if (sensorFault) {
-
-    snprintf(buf, sizeof(buf), "FAULT");
-
-    drawValue(
-      3, 72, 135, 238, 17,
-      2, buf, ILI9341_RED
-    );
-
-  } else if (!calibrationValid()) {
-
-    snprintf(buf, sizeof(buf), "CALIBRATE");
-
-    drawValue(
-      3, 72, 135, 238, 17,
-      2, buf, ILI9341_YELLOW
-    );
-
-  } else {
-
-    snprintf(
-      buf, sizeof(buf),
-      "%d%% %s",
-      averagePercent(),
-      soilDry ? "DRY" : "WET"
-    );
-
-    drawValue(
-      3, 72, 135, 238, 17,
-      2, buf,
-      waterDemand ? ILI9341_RED : ILI9341_GREEN
-    );
-  }
-
-  drawValue(
-    4, 95, 169, 215, 17,
-    2,
-    pumpCommandOn ? "ON" : "OFF",
-    pumpCommandOn ? ILI9341_GREEN : ILI9341_RED
-  );
-
-  drawValue(
-    5, 65, 199, 245, 10,
-    1,
-    safetyLockout
-      ? "LOCKOUT"
-      : (
-          autoEnabled
-            ? "AUTO"
-            : (
-                autoPaused
-                  ? "PAUSED (send A)"
-                  : "MANUAL"
-              )
-        ),
-    safetyLockout ? ILI9341_RED : ILI9341_CYAN
-  );
-
-  if (relayTestActive) {
-
-    snprintf(
-      buf, sizeof(buf),
-      "RELAY TEST - PUMP DISCONNECTED"
-    );
-
-  } else if (testInput) {
-
-    snprintf(
-      buf, sizeof(buf),
-      "TEST INPUT ($RAW) PULSES %d/%d",
-      pulsesUsed,
-      MAX_PULSES
-    );
-
-  } else if (!PUMP_HARDWARE_VERIFIED) {
-
-    snprintf(
-      buf, sizeof(buf),
-      "PUMP WIRING NOT VERIFIED"
-    );
-
-  } else if (sensorFault) {
-
-    snprintf(
-      buf, sizeof(buf),
-      "CHECK SENSOR POWER/AO"
-    );
-
-  } else if (!calibrationValid()) {
-
-    snprintf(
-      buf, sizeof(buf),
-      "SEND D THEN W"
-    );
-
-  } else if (safetyLockout) {
-
-    snprintf(
-      buf, sizeof(buf),
-      "MAX PULSES; SEND X"
-    );
-
-  } else {
-
-    snprintf(
-      buf, sizeof(buf),
-      "%s PULSES %d/%d",
-      soilDry ? "DRY" : "WET",
-      pulsesUsed,
-      MAX_PULSES
-    );
-  }
-
-  drawValue(
-    6, 65, 219, 245, 10,
-    1, buf, ILI9341_YELLOW
   );
 }
 
@@ -1510,8 +1248,6 @@ void setup() {
     false
   );
 
-  initDisplay();
-
   // LED startup test.
   digitalWrite(LED_PIN, HIGH);
 
@@ -1526,8 +1262,6 @@ void setup() {
   updateSoilStatus();
 
   autoEnabled = autoAllowed();
-
-  updateDisplay();
 
   Serial.println(
     "#EVENT esp32_s3_irrigation_v2_3_fast_response_boot"
@@ -1633,7 +1367,7 @@ void loop() {
 
   }
 
-  // TFT and serial telemetry update once per second.
+  // LED and serial telemetry update once per second.
   if (
     now - lastUiUpdateMs >= UI_UPDATE_INTERVAL_MS
   ) {
@@ -1641,8 +1375,6 @@ void loop() {
     lastUiUpdateMs = now;
 
     updateLED();
-
-    updateDisplay();
 
     emitTelemetry();
 

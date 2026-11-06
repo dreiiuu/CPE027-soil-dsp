@@ -4,17 +4,18 @@ CPE 027 DSP project: *Median and Moving-Average Smoothing of Multi-Sensor Soil M
 
 ```
 per sensor: raw ADC (1 Hz) -> 3-point running median (spikes) -> 5-point moving average FIR (noise)
-   -> calibrated % -> average of 3 -> DRY / WET (thresholds + hysteresis) -> pump / TFT / PC dashboard
+   -> calibrated % -> average of 3 -> DRY / WET (thresholds + hysteresis) -> pump / red LED / PC dashboard
 ```
 
-## Current build (v2.3): start here
+## Current build (v2.4): start here
 
-The board on the bench follows `docs/handoff/Smart_Irrigation_DSP_Software_Handoff.md`: ILI9341 TFT, three
+The board on the bench follows `docs/handoff/Smart_Irrigation_DSP_Software_Handoff.md`, **without the TFT display** (removed;
+the PC dashboard is the system's display), three
 v1.2 sensors on board labels 1/2/3, **relay on 5, red LED on 6** (swapped from the original wiring). Its firmware is
-**`firmware/smart_irrigation/smart_irrigation.ino`** v2.3: sensors sampled every 100 ms (10 Hz) through a median 3 + moving average 3
-filter, pump stopped in the same 100 ms pass that the average reaches 70%, 5 s soak between pulses, telemetry and TFT still
+**`firmware/smart_irrigation/smart_irrigation.ino`** v2.4 (v2.3 without the TFT code): sensors sampled every 100 ms (10 Hz) through a median 3 + moving average 3
+filter, pump stopped in the same 100 ms pass that the average reaches 70%, 5 s soak between pulses, telemetry still
 once per second, `R` relay diagnostic (only while `PUMP_HARDWARE_VERIFIED=false`), DRY/WET status, plus calibration
-from typed raw values (`$CAL`) and a bench test input (`$RAW`). v2.3 ships with
+from typed raw values (`$CAL`) and a bench test input (`$RAW`). v2.4 ships with
 `PUMP_HARDWARE_VERIFIED=true` (the relay wiring has been verified).
 
 **The paper's results come from firmware v2.1** (median 3 + moving average 5 at 1 Hz, 20 s soak; session of
@@ -35,7 +36,7 @@ Then open http://127.0.0.1:8765/ (add `--sim --sim-verified` instead of `--port`
 
 1. Install [arduino-cli](https://arduino.github.io/arduino-cli/latest/installation/) and make sure `arduino-cli version` works in a terminal.
 2. Open the repo folder in VS Code. **Terminal > Run Task... > Firmware: setup** (once): installs the ESP32 core 3.0.7
-   and the Adafruit GFX + ILI9341 libraries, then lists the connected boards and their ports.
+   and the Adafruit GFX + ILI9341 libraries (only the old firmware still needs them), then lists the connected boards and their ports.
 3. **Firmware: compile** (Ctrl+Shift+B) checks that it builds. **Firmware: upload** asks for the port (e.g. `COM7`) and flashes.
    Close the dashboard first: only one program can use the serial port.
 4. **Dashboard: run on board** asks for the port and starts the PC app. **Dashboard: run simulator** runs it without the board.
@@ -54,7 +55,7 @@ The analysis tooling still applies: convert a session log with `software/to_anal
 | Path | What it is |
 |---|---|
 | `firmware/soil_dsp/dsp.h` | The DSP core (calibration, median3, running median, EMA, moving average, pump controller, toggle counter). No Arduino dependencies. |
-| `firmware/smart_irrigation/smart_irrigation.ino` | **Current firmware** v2.3: 3 sensors at 10 Hz, 12x average + median 3 + moving average 3, immediate stop at 70%, DRY/WET status, calibration (D/W or `$CAL`), automatic watering with pause/lockout kept in NVS, `$RAW` bench test, ILI9341 TFT, JSONL telemetry over USB. |
+| `firmware/smart_irrigation/smart_irrigation.ino` | **Current firmware** v2.4: 3 sensors at 10 Hz, 12x average + median 3 + moving average 3, immediate stop at 70%, DRY/WET status, calibration (D/W or `$CAL`), automatic watering with pause/lockout kept in NVS, `$RAW` bench test, no TFT (GPIO 8-12 free), JSONL telemetry over USB. |
 | `software/irrigation_ui/` | **Current software UI**: PC app that reads the serial telemetry. Live dashboard, alerts, CSV log, DSP comparison, confirmed commands, simulator. |
 | `docs/INTEGRATION.md` | How hardware, firmware and software connect, and the mismatches found. |
 | `firmware/soil_dsp/soil_dsp.ino` | ESP32-S3 firmware: samples 3 sensors, runs the pipeline, drives relay/TFT, serves the dashboard, logs CSV over serial. |

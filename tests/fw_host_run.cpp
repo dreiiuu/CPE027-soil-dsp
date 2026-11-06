@@ -49,7 +49,6 @@ static void cmd(const char* c) { g_serial_in += c; }
 static void reboot() {           // power cycle: RAM state lost, NVS kept, uptime restarts
   g_ms = 0; filterInitialized = statusKnown = false; autoEnabled = pumpCommandOn = manualPulse = waterDemand = false;
   testInput = ledTestActive = false; pulsesUsed = 0; lastPumpStopMs = 0; lineMode = false;
-  memset(fieldCache, 0, sizeof fieldCache);
   wasOn = false;
   setup();
 }
