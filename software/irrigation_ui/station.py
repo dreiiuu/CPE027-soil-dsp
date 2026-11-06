@@ -176,7 +176,8 @@ class Station:
         if self.send_fn is None:
             return False, "no source"
         try:
-            text = "F" if sim_only else command_line(cmd, values)
+            used = self.latest.sensors_used if self.latest is not None else None
+            text = "F" if sim_only else command_line(cmd, values, used)
         except (ValueError, TypeError) as e:
             return False, str(e)
         what = COMMANDS.get(cmd, "simulator fault toggle")
@@ -268,7 +269,8 @@ class Station:
         ts = [r["ms"] / 1000.0 for r in h]
         avg = [r["avg"] for r in h]
         pump = [r["pump"] for r in h]
-        rep = analysis.sensor_report([r["raw"] for r in h], [r["pct"] for r in h], ts, pump)
+        used = self.latest.sensors_used if self.latest is not None else None
+        rep = analysis.sensor_report([r["raw"] for r in h], [r["pct"] for r in h], ts, pump, used)
         rate = analysis.drying_rate(ts, avg, pump)
         resp = analysis.pulse_responses(ts, avg, pump)
         return {"sensors": rep, "drying_pct_per_h": None if rate is None else round(rate, 2),

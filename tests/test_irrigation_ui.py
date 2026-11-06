@@ -90,6 +90,22 @@ class Protocol(unittest.TestCase):
         with self.assertRaises(ValueError):
             command_line("RAW", [1, 2, 5000])
 
+    def test_sensors_used(self):
+        s = EXAMPLE[:-1] + ',"paused":false,"test_input":false,"dry_ref":[1504,0,1943],"wet_ref":[1096,0,1187],' \
+                           '"sensors_used":[true,false,true],"status":"WET"}'
+        t = parse_line(s).telemetry
+        self.assertEqual(t.sensors_used, [True, False, True])
+        self.assertEqual(format_telemetry(t), s)
+        # S2 unused: its 0 values must not block $CAL; a used sensor's bad value still does
+        self.assertEqual(command_line("CAL", [1504, 0, 1943, 1096, 0, 1187], [True, False, True]),
+                         "$CAL 1504 0 1943 1096 0 1187\n")
+        with self.assertRaises(ValueError):
+            command_line("CAL", [1504, 0, 1943, 1096, 0, 1187])
+        rep = analysis.sensor_report([[1500, 0, 1900], [1500, 1200, 1900]] * 40, [[50, None, 60]] * 80,
+                                     list(range(80)), [False] * 80, [True, False, True])
+        self.assertIsNone(rep["noise_sd"][1])
+        self.assertFalse(any("S2" in w for w in rep["warnings"]))
+
     def test_rejects(self):
         self.assertEqual(parse_line(EXAMPLE.replace('"v":1', '"v":2')).kind, "version")
         self.assertEqual(parse_line(EXAMPLE[:-20]).kind, "bad")                                   # cut-off line

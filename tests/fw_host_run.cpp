@@ -62,10 +62,14 @@ int main() {
   CHECK(g_pin[RELAY_PIN] == HIGH);                // relay de-energised at boot
   run(5);                                         // uncalibrated: raw only, percentages null
   CHECK(!autoEnabled);
-  setCounts(DRYC[0], DRYC[1], DRYC[2]); cmd("D"); run(2);
-  setCounts(WETC[0], WETC[1], WETC[2]); cmd("W"); run(2);
+  setCounts(DRYC[0], 0, DRYC[2]);                  // S2 disconnected (reads 0): must not block calibration
+  cmd("DD"); run(3);                               // double tap: the second D is ignored
+  CHECK(dryADC[0] == DRYC[0] && dryADC[2] == DRYC[2] && !sensorFault);
+  setCounts(WETC[0], 0, WETC[2]); cmd("W"); run(2);
   CHECK(calibrationValid() && !autoPaused && !autoEnabled);   // hardware not verified: no AUTO
-  setPct(62); run(8);
+  CHECK(sensorPercent(1) < 0);                     // S2 not used: no percentage
+  setPct(62); g_adc[2] = 0; run(8);
+  CHECK(!sensorFault && averagePercent() == 62);   // average of S1 and S3 only
   setPct(40); run(6);                             // below 50 %: water needed, LED on
   CHECK(waterDemand && g_pin[LED_PIN] == HIGH);
   CHECK(statusKnown && soilDry);                  // DRY below the start threshold
@@ -149,7 +153,7 @@ int main() {
   CHECK(!testInput && !waterDemand);              // back on the real (wet) probes
 
   // sensor fault: pump off, AUTO paused until A
-  g_adc[2] = 4095; run(3);
+  g_adc[1] = 4095; run(3);                        // S1 at the rail (S2 is not used)
   CHECK(sensorFault && autoPaused && !autoEnabled && !pumpCommandOn);
   setPct(75); run(3);
   CHECK(!sensorFault && !autoEnabled);

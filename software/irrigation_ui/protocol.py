@@ -1,7 +1,7 @@
 """Parser for the ESP32-S3 serial protocol (firmware/smart_irrigation/smart_irrigation.ino, protocol v1).
 
 Firmware v2.0+ keeps "v":1 and only adds fields (paused, test_input, dry_ref, wet_ref; v2.1 status;
-v2.3 relay_test_active, relay_output_commanded). They are
+v2.3 relay_test_active, relay_output_commanded; v2.5 sensors_used). They are
 optional here, so logs from firmware v1.0 still parse.
 
 The firmware prints, at 115200 baud:
@@ -43,8 +43,9 @@ RISKY_COMMANDS = {"D", "W", "A", "T", "CAL", "RAW"}
 ADC_BAD_LOW, ADC_BAD_HIGH, MIN_CALIBRATION_SPAN_ADC = 10, 4085, 150
 
 
-def command_line(cmd: str, values=None) -> str:
-    """Text to send for a command. Raises ValueError when the firmware would reject it anyway."""
+def command_line(cmd: str, values=None, used=None) -> str:
+    """Text to send for a command. Raises ValueError when the firmware would reject it anyway.
+    `used`: the board's sensors_used flags (firmware v2.5); unused sensors are not checked."""
     if cmd in ("D", "W", "A", "X", "L", "T", "?"):
         return cmd
     if cmd == "RAW_OFF":
@@ -54,6 +55,8 @@ def command_line(cmd: str, values=None) -> str:
         if len(vals) != 6:
             raise ValueError("CAL needs 6 values: dry1 dry2 dry3 wet1 wet2 wet3")
         for i in range(3):
+            if used is not None and not used[i]:
+                continue
             d, w = vals[i], vals[i + 3]
             for v in (d, w):
                 if not ADC_BAD_LOW < v < ADC_BAD_HIGH:
@@ -93,12 +96,13 @@ class Telemetry:
     dry_ref: Optional[list] = None
     wet_ref: Optional[list] = None
     status: Optional[str] = None  # "DRY" / "WET"; not sent while uncalibrated or faulted
+    sensors_used: Optional[list] = None  # v2.5: which sensors the board uses, e.g. [True, False, True]
     extra: dict = field(default_factory=dict)  # unknown keys from a newer firmware, kept for logging
 
     def to_dict(self) -> dict:
         d = {k: getattr(self, k) for k in ("v", "ms", "raw", "filtered_raw", "moisture_pct", "average_pct",
                                            *BOOL_FIELDS, "pulses", "relay_test_active", "relay_output_commanded", "paused",
-                                           "test_input", "dry_ref", "wet_ref", "status")}
+                                           "test_input", "dry_ref", "wet_ref", "sensors_used", "status")}
         return d
 
 
@@ -172,6 +176,11 @@ def parse_line(line: str) -> Parsed:
         for k in ("dry_ref", "wet_ref"):
             if k in obj:
                 setattr(t, k, _triple(obj[k], k, 0, 4095, nullable=True))
+        if "sensors_used" in obj:
+            su = obj["sensors_used"]
+            if not (isinstance(su, list) and len(su) == 3 and all(isinstance(x, bool) for x in su)):
+                raise ValueError("sensors_used must be 3 true/false values")
+            t.sensors_used = su
         if "status" in obj:
             if obj["status"] not in ("DRY", "WET"):
                 raise ValueError("status must be DRY or WET")
@@ -179,7 +188,8 @@ def parse_line(line: str) -> Parsed:
     except ValueError as e:
         return Parsed("bad", text=line, error=str(e))
     known = {"type", "v", "ms", "raw", "filtered_raw", "moisture_pct", "average_pct", "pulses", *BOOL_FIELDS,
-             "paused", "test_input", "dry_ref", "wet_ref", "status", "relay_test_active", "relay_output_commanded"}
+             "paused", "test_input", "dry_ref", "wet_ref", "status", "relay_test_active", "relay_output_commanded",
+             "sensors_used"}
     t.extra = {k: v for k, v in obj.items() if k not in known}
     return Parsed("telemetry", telemetry=t, text=line)
 
@@ -203,4 +213,6 @@ def format_telemetry(t: Telemetry) -> str:
             b(t.relay_test_active), b(t.relay_output_commanded))
     line = line[:-1] + ',"paused":%s,"test_input":%s,"dry_ref":%s,"wet_ref":%s}' % (
         b(t.paused), b(t.test_input), arr(t.dry_ref), arr(t.wet_ref))
+    if t.sensors_used is not None:             # firmware v2.5, before "status"
+        line = line[:-1] + ',"sensors_used":[%s]}' % ','.join(b(x) for x in t.sensors_used)
     return line if t.status is None else line[:-1] + ',"status":"%s"}' % t.status

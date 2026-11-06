@@ -1,6 +1,6 @@
 /*
   SMART SOIL IRRIGATION - ESP32-S3 N16R8
-  Version 2.4 - fast moisture monitoring and immediate threshold stop, no TFT
+  Version 2.5 - fast moisture monitoring and immediate threshold stop, no TFT, S2 not used
 
   HARDWARE PINS
   Sensors: GPIO 1, 2, 3
@@ -23,6 +23,10 @@
   - When the filtered three-sensor average reaches 70%, the pump is switched OFF
     during that control pass, without waiting for the pulse or soak timer.
   - Serial telemetry remains at 1-second intervals.
+
+  v2.5: SENSOR_USED picks the sensors that are connected (S2 is disconnected). Unused sensors
+  are ignored for faults, calibration checks and the average. A second D/W tap within 2 s is
+  ignored, and a refused calibration names the sensor that caused it.
 
   v2.4: the TFT display was removed from the hardware. Its code and the Adafruit
   libraries are gone; GPIO 8-12 are free.
@@ -53,6 +57,10 @@
 // -------- HARDWARE PINS --------
 const uint8_t SENSOR_PINS[3] = {1, 2, 3};
 
+// Sensors that are connected. S2 is disconnected: false = ignored for faults,
+// calibration checks and the average (its reading is still sent to the dashboard).
+const bool SENSOR_USED[3] = {true, false, true};
+
 const uint8_t LED_PIN = 6;
 const uint8_t RELAY_PIN = 5;
 
@@ -82,6 +90,7 @@ const int MIN_CALIBRATION_SPAN_ADC = 150;
 
 const int ADC_BAD_LOW = 10;
 const int ADC_BAD_HIGH = 4085;
+const unsigned long CAL_TAP_GUARD_MS = 2000UL;   // ignore a repeated D/W tap within this time
 
 const uint8_t MEDIAN_POINTS = 3;
 const uint8_t MA_POINTS = 3;
@@ -190,6 +199,9 @@ bool ledTestActive = false;
 bool ledState = false;
 
 bool testInput = false;
+
+bool calTapped = false;
+unsigned long lastCalTapMs = 0;
 
 int testRaw[3] = {0, 0, 0};
 
@@ -347,8 +359,9 @@ void sampleSensors() {
   for (int i = 0; i < 3; i++) {
 
     if (
-      rawADC[i] <= ADC_BAD_LOW ||
-      rawADC[i] >= ADC_BAD_HIGH
+      SENSOR_USED[i] &&
+      (rawADC[i] <= ADC_BAD_LOW ||
+       rawADC[i] >= ADC_BAD_HIGH)
     ) {
       sensorFault = true;
     }
@@ -362,6 +375,8 @@ void sampleSensors() {
 bool calibrationValid() {
 
   for (int i = 0; i < 3; i++) {
+
+    if (!SENSOR_USED[i]) continue;
 
     if (
       dryADC[i] < 0 ||
@@ -378,7 +393,7 @@ bool calibrationValid() {
 
 int sensorPercent(int i) {
 
-  if (!calibrationValid() || sensorFault) {
+  if (!SENSOR_USED[i] || !calibrationValid() || sensorFault) {
     return -1;
   }
 
@@ -396,13 +411,17 @@ int averagePercent() {
     return -1;
   }
 
-  return (int)lroundf(
-    (
-      sensorPercent(0) +
-      sensorPercent(1) +
-      sensorPercent(2)
-    ) / 3.0f
-  );
+  int sum = 0;
+  int used = 0;
+
+  for (int i = 0; i < 3; i++) {
+    if (SENSOR_USED[i]) {
+      sum += sensorPercent(i);
+      used++;
+    }
+  }
+
+  return (int)lroundf(sum / (float)used);
 }
 
 void updateSoilStatus() {
@@ -541,13 +560,14 @@ void captureCalibration(bool dry) {
     measured[i] = (int)(sum / 20);
 
     if (
-      measured[i] <= ADC_BAD_LOW ||
-      measured[i] >= ADC_BAD_HIGH
+      SENSOR_USED[i] &&
+      (measured[i] <= ADC_BAD_LOW ||
+       measured[i] >= ADC_BAD_HIGH)
     ) {
 
-      Serial.println(
-        "#EVENT calibration_rejected_rail_reading"
-      );
+      Serial.print("#EVENT calibration_rejected_S");
+      Serial.print(i + 1);
+      Serial.println("_reads_0_or_4095_check_wiring");
 
       return;
     }
@@ -845,6 +865,15 @@ void emitTelemetry() {
   Serial.print(",\"wet_ref\":");
   printRefs(wetADC);
 
+  Serial.print(",\"sensors_used\":[");
+
+  for (int i = 0; i < 3; i++) {
+    if (i) Serial.print(',');
+    Serial.print(SENSOR_USED[i] ? "true" : "false");
+  }
+
+  Serial.print(']');
+
   if (statusKnown) {
 
     Serial.print(",\"status\":");
@@ -939,6 +968,8 @@ void handleLine(const char* line) {
     }
 
     for (int i = 0; i < 3; i++) {
+
+      if (!SENSOR_USED[i]) continue;
 
       if (
         v[i] <= ADC_BAD_LOW ||
@@ -1052,13 +1083,16 @@ void handleSerial() {
       lineMode = true;
       lineLen = 0;
 
-    } else if (c == 'D' || c == 'd') {
+    } else if (c == 'D' || c == 'd' || c == 'W' || c == 'w') {
 
-      captureCalibration(true);
-
-    } else if (c == 'W' || c == 'w') {
-
-      captureCalibration(false);
+      // One tap is enough: a repeated tap within 2 s is ignored.
+      if (calTapped && millis() - lastCalTapMs < CAL_TAP_GUARD_MS) {
+        Serial.println("#EVENT calibration_tap_ignored_wait_2s");
+      } else {
+        calTapped = true;
+        lastCalTapMs = millis();
+        captureCalibration(c == 'D' || c == 'd');
+      }
 
     } else if (c == 'L' || c == 'l') {
 
