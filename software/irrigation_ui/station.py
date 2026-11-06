@@ -152,6 +152,19 @@ class Station:
         self._threshold_mismatch_run = self._threshold_mismatch_run + 1 if bad else 0
         self.threshold_mismatch = self._threshold_mismatch_run >= 3
 
+    # ---------------------------------------------------------------- reset view
+    def reset_view(self):
+        """Clear what the dashboard shows (history, events, counters). The board and the CSV log are untouched."""
+        with self.lock:
+            self.hist.clear()
+            self.events.clear()
+            self.stats.clear()
+            self._prev_ms = None
+            self._threshold_mismatch_run = 0
+            self.threshold_mismatch = False
+            self.version_error = self.last_bad = ""
+            self._log_event("dashboard view reset (board and CSV log unchanged)", "operator")
+
     # ---------------------------------------------------------------- commands
     def command(self, cmd: str, confirmed: bool, values=None) -> tuple[bool, str]:
         cmd = cmd.strip()

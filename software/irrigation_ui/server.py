@@ -5,6 +5,7 @@ GET  /api/state        latest telemetry, connection, alerts, analysis, recent ev
 GET  /api/history?since=SEQ           samples after SEQ (incremental polling)
 GET  /api/filtered?sensor=0&kind=ma10 raw vs firmware EMA vs a dashboard-side filter
 GET  /api/export.csv   this session's CSV log
+POST /api/reset_view   clear the dashboard's history, events and counters (board and CSV log untouched)
 POST /api/command      JSON {"cmd": "D", "confirm": true}; risky commands need confirm=true
                        {"cmd": "CAL", "values": [d1,d2,d3,w1,w2,w3], "confirm": true}
                        {"cmd": "RAW", "values": [r1,r2,r3], "confirm": true}   {"cmd": "RAW_OFF"}
@@ -65,13 +66,18 @@ def make_server(station: Station, host: str, port: int) -> ThreadingHTTPServer:
                 self._send(400, {"error": str(e)})
 
         def do_POST(self):
-            if urlparse(self.path).path != "/api/command":
+            path = urlparse(self.path).path
+            if path not in ("/api/command", "/api/reset_view"):
                 self._send(404, {"error": "not found"})
                 return
             # same-origin only: a page on another site must not be able to command the pump
             origin = self.headers.get("Origin")
             if origin and urlparse(origin).netloc != self.headers.get("Host"):
                 self._send(403, {"ok": False, "msg": "cross-origin command refused"})
+                return
+            if path == "/api/reset_view":
+                station.reset_view()
+                self._send(200, {"ok": True, "msg": "view reset"})
                 return
             try:
                 n = int(self.headers.get("Content-Length", 0))

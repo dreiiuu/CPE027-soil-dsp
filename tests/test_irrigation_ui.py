@@ -222,6 +222,24 @@ class StationBehaviour(unittest.TestCase):
             self.assertEqual(to_analysis_csv.convert(str(st.log_path), str(out)), 5)
             self.assertEqual(out.read_text().splitlines()[:2], ["t_s,s1,s2,s3,pump", "0,2580,3160,3197,0"])
 
+    def test_reset_view(self):
+        clk = FakeClock()
+        st = Station("serial", False, None, clock=clk)
+        st.on_status("connected", "COM10")
+        for i in range(5):
+            clk.t += 1
+            st.on_line(EXAMPLE.replace("60123", str(60123 + 1000 * i)))
+        st.on_line(EXAMPLE.replace("60123", "90000"))          # a gap -> missing records
+        self.assertGreater(st.stats["missing_records"], 0)
+        st.reset_view()
+        s = st.state()
+        self.assertEqual(st.history()["seq"], [])
+        self.assertEqual(s["stats"], {})
+        self.assertEqual([e["text"] for e in s["events"]], ["dashboard view reset (board and CSV log unchanged)"])
+        st.on_line(EXAMPLE.replace("60123", "91000"))          # new data after the reset, no false gap
+        self.assertEqual(len(st.history()["seq"]), 1)
+        self.assertNotIn("missing_records", st.stats)
+
     def test_stale_and_disconnect(self):
         clk = FakeClock()
         st = Station("serial", False, None, clock=clk)
