@@ -144,7 +144,7 @@ int main() {
   // bench test with $RAW: pretend 45 % without touching the soil
   char line[64];
   snprintf(line, sizeof line, "$RAW %d %d %d\n", countAt(0, 45), countAt(1, 45), countAt(2, 45));
-  cmd(line); run(8);
+  cmd(line); run(4);                              // one pulse (the next waits for the soak time)
   CHECK(testInput && waterDemand && switchOns == 6);
   cmd("$RAW OFF\n"); run(6);
   CHECK(!testInput && !waterDemand);              // back on the real (wet) probes

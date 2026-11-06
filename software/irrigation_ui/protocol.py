@@ -1,6 +1,7 @@
 """Parser for the ESP32-S3 serial protocol (firmware/smart_irrigation/smart_irrigation.ino, protocol v1).
 
-Firmware v2.0 keeps "v":1 and only adds fields (paused, test_input, dry_ref, wet_ref). They are
+Firmware v2.0+ keeps "v":1 and only adds fields (paused, test_input, dry_ref, wet_ref; v2.1 status;
+v2.3 relay_test_active, relay_output_commanded). They are
 optional here, so logs from firmware v1.0 still parse.
 
 The firmware prints, at 115200 baud:
@@ -86,6 +87,8 @@ class Telemetry:
     v: int = PROTOCOL_VERSION
     # firmware v2.0 additions (None = not sent, i.e. firmware v1.0)
     paused: Optional[bool] = None
+    relay_test_active: Optional[bool] = None       # v2.3: R relay diagnostic running
+    relay_output_commanded: Optional[bool] = None  # v2.3: relay driven by the R diagnostic
     test_input: Optional[bool] = None
     dry_ref: Optional[list] = None
     wet_ref: Optional[list] = None
@@ -94,7 +97,8 @@ class Telemetry:
 
     def to_dict(self) -> dict:
         d = {k: getattr(self, k) for k in ("v", "ms", "raw", "filtered_raw", "moisture_pct", "average_pct",
-                                           *BOOL_FIELDS, "pulses", "paused", "test_input", "dry_ref", "wet_ref", "status")}
+                                           *BOOL_FIELDS, "pulses", "relay_test_active", "relay_output_commanded", "paused",
+                                           "test_input", "dry_ref", "wet_ref", "status")}
         return d
 
 
@@ -160,7 +164,7 @@ def parse_line(line: str) -> Parsed:
         if not isinstance(getattr(t, k), bool):
             return Parsed("bad", text=line, error=f"{k} must be true/false")
     try:
-        for k in ("paused", "test_input"):
+        for k in ("paused", "test_input", "relay_test_active", "relay_output_commanded"):
             if k in obj:
                 if not isinstance(obj[k], bool):
                     raise ValueError(f"{k} must be true/false")
@@ -175,7 +179,7 @@ def parse_line(line: str) -> Parsed:
     except ValueError as e:
         return Parsed("bad", text=line, error=str(e))
     known = {"type", "v", "ms", "raw", "filtered_raw", "moisture_pct", "average_pct", "pulses", *BOOL_FIELDS,
-             "paused", "test_input", "dry_ref", "wet_ref", "status"}
+             "paused", "test_input", "dry_ref", "wet_ref", "status", "relay_test_active", "relay_output_commanded"}
     t.extra = {k: v for k, v in obj.items() if k not in known}
     return Parsed("telemetry", telemetry=t, text=line)
 
@@ -194,6 +198,9 @@ def format_telemetry(t: Telemetry) -> str:
         b(t.hardware_verified))
     if t.paused is None:                       # firmware v1.0 line
         return line
+    if t.relay_test_active is not None:        # firmware v2.3 sends these before "paused"
+        line = line[:-1] + ',"relay_test_active":%s,"relay_output_commanded":%s}' % (
+            b(t.relay_test_active), b(t.relay_output_commanded))
     line = line[:-1] + ',"paused":%s,"test_input":%s,"dry_ref":%s,"wet_ref":%s}' % (
         b(t.paused), b(t.test_input), arr(t.dry_ref), arr(t.wet_ref))
     return line if t.status is None else line[:-1] + ',"status":"%s"}' % t.status

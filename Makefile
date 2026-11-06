@@ -36,7 +36,9 @@ crosscheck: build
 
 # Smart-irrigation firmware run on the PC (real .ino, stubbed hardware) -> its serial output -> PC app tests
 app-test: build
-	$(CXX) -std=gnu++17 -O1 -Wall -Wextra -include Arduino.h -I $(STUBS) tests/fw_host_run.cpp -o build/fw_host_run
+	sed 's/const bool PUMP_HARDWARE_VERIFIED = true;/const bool PUMP_HARDWARE_VERIFIED = false;/' firmware/smart_irrigation/smart_irrigation.ino > build/smart_irrigation_locked.ino
+	grep -q 'PUMP_HARDWARE_VERIFIED = false;' build/smart_irrigation_locked.ino
+	$(CXX) -std=gnu++17 -O1 -Wall -Wextra -include Arduino.h -I $(STUBS) '-DFW_FILE="../build/smart_irrigation_locked.ino"' tests/fw_host_run.cpp -o build/fw_host_run
 	./build/fw_host_run > build/fw_serial.txt
 	sed 's/const bool PUMP_HARDWARE_VERIFIED = false;/const bool PUMP_HARDWARE_VERIFIED = true;/' firmware/smart_irrigation/smart_irrigation.ino > build/smart_irrigation_verified.ino
 	grep -q 'PUMP_HARDWARE_VERIFIED = true;' build/smart_irrigation_verified.ino
