@@ -240,8 +240,8 @@ class Station:
         if t.water_needed and t.calibrated:
             a.append(("warn", "water_needed", "Water needed (average below the start threshold)."))
         if t.paused and not t.lockout:
-            a.append(("warn", "paused", "AUTO is PAUSED (X or a dry calibration). It stays paused "
-                                        "after a restart. Send A to resume."))
+            a.append(("warn", "paused", "AUTO is PAUSED (X or a dry calibration). A restart also "
+                                        "resumes it (firmware v2.8). Send A to resume."))
         elif not t.auto_mode and t.calibrated and t.hardware_verified and not t.lockout and t.average_pct is not None:
             a.append(("info", "manual", "AUTO is off: the board will not water by itself."))
         if self.stats["missing_records"]:

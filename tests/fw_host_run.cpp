@@ -60,7 +60,8 @@ int main() {
   setCounts(2580, 3166, 3197);                    // the raw readings reported in the handoff
   setup();
   CHECK(g_pin[RELAY_PIN] == HIGH);                // relay de-energised at boot
-  run(5);                                         // uncalibrated: raw only, percentages null
+  run(5);                                         // built-in calibration: % from the first record (v2.8)
+  CHECK(calibrationValid() && averagePercent() >= 0);
   CHECK(!autoEnabled);
   setCounts(DRYC[0], 0, DRYC[2]);                  // S2 disconnected (reads 0): must not block calibration
   cmd("DD"); run(3);                               // double tap: the second D is ignored
@@ -97,7 +98,7 @@ int main() {
   cmd("X"); cmd("?"); run(2);
   CHECK(autoPaused);
   reboot(); run(3);
-  CHECK(calibrationValid() && autoPaused);        // both survived the power cycle
+  CHECK(calibrationValid() && !autoPaused);       // calibration kept; a pause does not survive a restart (v2.8)
   CHECK(switchOns == 0);
   std::fflush(stdout);
   if (failures) std::fprintf(stderr, "%d firmware host-run check(s) FAILED\n", failures);
@@ -107,9 +108,10 @@ int main() {
 // ---------------------------------------------------------------- PUMP_HARDWARE_VERIFIED=true copy
 int main() {
   g_serial_echo = true;
-  setPct(60);
-  setup(); run(3);
-  CHECK(!autoEnabled);                            // not calibrated yet
+  setCounts(DEFAULT_WET_ADC[0], DEFAULT_WET_ADC[1], DEFAULT_WET_ADC[2]);
+  setup(); run(3);                                // empty NVS: built-in calibration, works at once (v2.8)
+  CHECK(calibrationValid() && dryADC[0] == DEFAULT_DRY_ADC[0] && autoEnabled && averagePercent() == 100);
+  CHECK(switchOns == 0);
   setPct(40);
   cmd(CAL_LINE); run(4);                          // typed-in references arm AUTO (v2) ...
   CHECK(calibrationValid() && autoEnabled && !autoPaused && waterDemand);
@@ -131,7 +133,8 @@ int main() {
   cmd("X"); run(1);                               // clears lockout, pauses
   CHECK(!safetyLockout && autoPaused && !autoEnabled);
   reboot(); run(3);
-  CHECK(autoPaused && !autoEnabled);              // pause survives a reboot too
+  CHECK(!autoPaused && autoEnabled);              // v2.8: a pause does not survive a reboot
+  cmd("X"); run(1); CHECK(autoPaused && !autoEnabled);
 
   // manual pulse runs its full 1.5 s even at 100 % (v1 cut it short)
   setPct(100); run(3);

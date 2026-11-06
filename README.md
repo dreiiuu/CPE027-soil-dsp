@@ -7,15 +7,15 @@ per sensor: raw ADC (1 Hz) -> 3-point running median (spikes) -> 5-point moving 
    -> calibrated % -> average of 3 -> DRY / WET (thresholds + hysteresis) -> pump / red LED / PC dashboard
 ```
 
-## Current build (v2.7): start here
+## Current build (v2.8): start here
 
 The board on the bench follows `docs/handoff/Smart_Irrigation_DSP_Software_Handoff.md`, **without the TFT display** (removed;
 the PC dashboard is the system's display), three
 v1.2 sensors on board labels 1/2/3, **relay on 5, red LED on 6** (swapped from the original wiring). Its firmware is
-**`firmware/smart_irrigation/smart_irrigation.ino`** v2.7 (v2.3 without the TFT code; **S2 shown but not counted**: only the sensors in `SENSOR_USED` decide; **a faulty sensor is only a warning**: a probe reading 0/4095 or without calibration is skipped and the others keep watering, no pause; D/W/`$CAL` store the good sensors and skip a bad one; only with no usable S1/S3 is the pump held off, and it carries on by itself once one reads again): sensors sampled every 100 ms (10 Hz) through a median 3 + moving average 3
+**`firmware/smart_irrigation/smart_irrigation.ino`** v2.8 (**built-in calibration**: dry 1504/1644/1943, wet 1096/624/1187 raw counts from the 30 Oct 2026 log are used for any sensor without a stored calibration, so no D/W is needed; **start below 60 %, stop at 98 %**; a pause no longer survives a restart; v2.3 without the TFT code; **S2 shown but not counted**: only the sensors in `SENSOR_USED` decide; **a faulty sensor is only a warning**: a probe reading 0/4095 or without calibration is skipped and the others keep watering, no pause; D/W/`$CAL` store the good sensors and skip a bad one; only with no usable S1/S3 is the pump held off, and it carries on by itself once one reads again): sensors sampled every 100 ms (10 Hz) through a median 3 + moving average 3
 filter, pump stopped in the same 100 ms pass that the average reaches 98% (watering starts below 60%), 5 s soak between pulses, telemetry still
 once per second, `R` relay diagnostic (only while `PUMP_HARDWARE_VERIFIED=false`), DRY/WET status, plus calibration
-from typed raw values (`$CAL`) and a bench test input (`$RAW`). v2.7 ships with
+from typed raw values (`$CAL`) and a bench test input (`$RAW`). v2.8 ships with
 `PUMP_HARDWARE_VERIFIED=true` (the relay wiring has been verified).
 
 **The paper's results come from firmware v2.1** (median 3 + moving average 5 at 1 Hz, 20 s soak; session of
@@ -55,7 +55,7 @@ The analysis tooling still applies: convert a session log with `software/to_anal
 | Path | What it is |
 |---|---|
 | `firmware/soil_dsp/dsp.h` | The DSP core (calibration, median3, running median, EMA, moving average, pump controller, toggle counter). No Arduino dependencies. |
-| `firmware/smart_irrigation/smart_irrigation.ino` | **Current firmware** v2.7: S1 and S3 decide (a faulty one is skipped with a warning), S2 shown only, 10 Hz, 12x average + median 3 + moving average 3, start below 60%, immediate stop at 98%, DRY/WET status, calibration (D/W or `$CAL`), automatic watering with pause/lockout kept in NVS, `$RAW` bench test, no TFT (GPIO 8-12 free), JSONL telemetry over USB. |
+| `firmware/smart_irrigation/smart_irrigation.ino` | **Current firmware** v2.8 (built-in calibration): S1 and S3 decide (a faulty one is skipped with a warning), S2 shown only, 10 Hz, 12x average + median 3 + moving average 3, start below 60%, immediate stop at 98%, DRY/WET status, calibration (D/W or `$CAL`), automatic watering with pause/lockout kept in NVS, `$RAW` bench test, no TFT (GPIO 8-12 free), JSONL telemetry over USB. |
 | `software/irrigation_ui/` | **Current software UI**: PC app that reads the serial telemetry. Live dashboard, alerts, CSV log, DSP comparison, confirmed commands, simulator. |
 | `docs/INTEGRATION.md` | How hardware, firmware and software connect, and the mismatches found. |
 | `firmware/soil_dsp/soil_dsp.ino` | ESP32-S3 firmware: samples 3 sensors, runs the pipeline, drives relay/TFT, serves the dashboard, logs CSV over serial. |

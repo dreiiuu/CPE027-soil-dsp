@@ -1,6 +1,6 @@
 /*
   SMART SOIL IRRIGATION - ESP32-S3 N16R8
-  Version 2.7 - fast moisture monitoring, immediate threshold stop, a faulty sensor is only a warning
+  Version 2.8 - built-in calibration (no D/W needed), 60/98 % thresholds, a faulty sensor is only a warning
 
   HARDWARE PINS
   Sensors: GPIO 1, 2, 3
@@ -80,6 +80,13 @@ const bool RELAY_ACTIVE_LOW = true;
 const bool PUMP_HARDWARE_VERIFIED = true;
 
 const bool AUTO_START_AFTER_CALIBRATION = true;
+
+// -------- BUILT-IN CALIBRATION --------
+// Raw ADC references of this board's probes, from the 30 Oct 2026 session log (dry = probe in dry
+// air/soil, wet = probe in water). Used whenever a sensor has no valid stored calibration, so the
+// system works straight after upload without pressing D/W. D/W or $CAL still override them.
+const int DEFAULT_DRY_ADC[3] = {1504, 1644, 1943};
+const int DEFAULT_WET_ADC[3] = {1096, 624, 1187};
 
 // -------- IRRIGATION SETTINGS --------
 const int START_WATERING_PCT = 60;   // DRY below 60 % -> water
@@ -1317,12 +1324,18 @@ void setup() {
       WET_KEYS[i],
       -1
     );
+
+    // no valid stored calibration for this sensor: use the built-in values
+    if (!refsValid(i)) {
+      dryADC[i] = DEFAULT_DRY_ADC[i];
+      wetADC[i] = DEFAULT_WET_ADC[i];
+    }
   }
 
-  autoPaused = prefs.getBool(
-    "paused",
-    false
-  );
+  // v2.8: a pause (X) no longer survives a restart, so the board always starts working
+  // by itself. The safety lockout (3 pulses without reaching the stop level) still does.
+  autoPaused = false;
+  prefs.putBool("paused", false);
 
   safetyLockout = prefs.getBool(
     "lockout",
@@ -1345,7 +1358,7 @@ void setup() {
   autoEnabled = autoAllowed();
 
   Serial.println(
-    "#EVENT esp32_s3_irrigation_v2_7_fast_response_boot"
+    "#EVENT esp32_s3_irrigation_v2_8_fast_response_boot"
   );
 
   Serial.println(

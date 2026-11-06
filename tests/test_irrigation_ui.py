@@ -142,8 +142,8 @@ class FirmwareToApp(unittest.TestCase):
     def test_scenario_states(self):
         t = self.tel
         self.assertEqual(t[0].raw, [2580, 3166, 3197])
-        self.assertFalse(t[0].calibrated)
-        self.assertEqual(t[0].moisture_pct, [None, None, None])
+        self.assertTrue(t[0].calibrated)                              # v2.8: built-in calibration from boot
+        self.assertIsNotNone(t[0].average_pct)
         self.assertTrue(any(x.calibrated and x.average_pct is not None for x in t))
         self.assertTrue(any(x.water_needed and x.led_on for x in t))
         # v2.7: a faulty sensor is skipped, the others keep giving a reading and an average
@@ -154,7 +154,7 @@ class FirmwareToApp(unittest.TestCase):
         self.assertFalse(any(x.hardware_verified for x in t))
         self.assertFalse(any(x.auto_mode for x in t))
         self.assertTrue(any(x.test_input and x.raw == [2800, 3200, 3220] for x in t))
-        self.assertTrue(t[-1].calibrated and t[-1].paused)            # both survived the reboot via NVS
+        self.assertTrue(t[-1].calibrated and not t[-1].paused)        # v2.8: calibration kept, pause cleared at boot
         self.assertEqual(t[-1].dry_ref, [2950, 3380, 3400])
         self.assertEqual(t[-1].wet_ref, [1480, 1700, 1720])
 
