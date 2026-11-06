@@ -222,8 +222,7 @@ function render(){
   $('hw').textContent=t.hardware_verified?'pump hardware verified':'pump blocked: hardware not verified';$('hw').className=t.hardware_verified?'':'warn';
   const A=S.analysis.sensors||{};
   let rows='';for(let i=0;i<3;i++){const p=t.moisture_pct[i];
-    if(!usedS(i)){rows+=`<tr><td>S${i+1}</td><td>${i+1}</td><td colspan="6" class="off">not used (disconnected; ignored by the board)</td></tr>`;continue}
-    rows+=`<tr class="${t.test_input?'test':''}"><td>S${i+1}${t.test_input?' (TEST)':''}</td><td>${i+1}</td><td>${t.raw[i]}</td><td>${t.filtered_raw[i]}</td><td class="${p==null?'warn':''}">${p==null?'--':p+'%'}</td>
+    rows+=`<tr class="${t.test_input?'test':''}"><td>S${i+1}${t.test_input?' (TEST)':''}${usedS(i)?'':' <small>(shown only, not in average)</small>'}</td><td>${i+1}</td><td>${t.raw[i]}</td><td>${t.filtered_raw[i]}</td><td class="${p==null?'warn':''}">${p==null?'--':p+'%'}</td>
     <td>${fmt(A.noise_sd&&A.noise_sd[i],1)}</td><td>${A.spikes_recent?A.spikes_recent[i]:'--'}</td><td>${A.drift_counts_per_h&&A.drift_counts_per_h[i]!=null?A.drift_counts_per_h[i]:'--'}</td></tr>`}
   $('sens').innerHTML=rows;calRender();
   const an=S.analysis;let h='';
@@ -273,9 +272,7 @@ function draw(){
   const th=S.thresholds,t=S.t,refs=t&&t.dry_ref&&t.wet_ref,raw=sl(H.raw),pump=sl(H.pump),xs=sl(H.pc);
   for(let i=0;i<3;i++){
     const st=soilStatus(H.pct.map(p=>p[i]),th),b=$('st'+i);b.textContent=st||'--';b.className='pill '+(st==='DRY'?'dry':st==='WET'?'wet':'');
-    if(!usedS(i)){const cv=$('g'+i);plot(cv,{x:[],series:[]});const g=cv.getContext('2d');g.clearRect(0,0,cv.clientWidth,cv.clientHeight);
-      g.fillStyle='#93a08e';g.font='13px system-ui';g.fillText('S'+(i+1)+' not used (disconnected)',40,cv.clientHeight/2);continue}
-    plot($('g'+i),{x:xs,bands:pump,empty:'calibrate first (D then W, or $CAL)',
+    plot($('g'+i),{x:xs,bands:pump,empty:usedS(i)?'calibrate first (D then W, or $CAL)':'S'+(i+1)+': shown only, not in average (calibrate it to see %)',
       hlines:[{v:th.start_pct,c:'#e06c5a'},{v:th.stop_pct,c:'#6fa8dc'}],
       series:[{y:raw.map(r=>refs?pctOf(r[i],t.dry_ref[i],t.wet_ref[i]):null),c:'#7d877a',w:1},{y:pct.map(p=>p[i]),c:'#7fbf6a',w:2.4}]})}
   plot($('c1'),{x:sl(H.pc),lo:0,hi:100,bands:sl(H.pump),empty:'no calibrated percentages yet (send D then W)',

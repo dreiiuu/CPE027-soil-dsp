@@ -1,6 +1,6 @@
 /*
   SMART SOIL IRRIGATION - ESP32-S3 N16R8
-  Version 2.5 - fast moisture monitoring and immediate threshold stop, no TFT, S2 not used
+  Version 2.6 - fast moisture monitoring and immediate threshold stop, no TFT, S2 shown but not counted
 
   HARDWARE PINS
   Sensors: GPIO 1, 2, 3
@@ -23,6 +23,9 @@
   - When the filtered three-sensor average reaches 70%, the pump is switched OFF
     during that control pass, without waiting for the pulse or soak timer.
   - Serial telemetry remains at 1-second intervals.
+
+  v2.6: a sensor outside SENSOR_USED (S2) is shown with its own calibrated percentage, but it is
+  never counted in the average, the fault check or the pump decision.
 
   v2.5: SENSOR_USED picks the sensors that are connected (S2 is disconnected). Unused sensors
   are ignored for faults, calibration checks and the average. A second D/W tap within 2 s is
@@ -57,8 +60,8 @@
 // -------- HARDWARE PINS --------
 const uint8_t SENSOR_PINS[3] = {1, 2, 3};
 
-// Sensors that are connected. S2 is disconnected: false = ignored for faults,
-// calibration checks and the average (its reading is still sent to the dashboard).
+// Sensors that decide the watering. false (S2) = shown only: ignored for faults, the
+// calibration check and the average; its own percentage is still sent to the dashboard.
 const bool SENSOR_USED[3] = {true, false, true};
 
 const uint8_t LED_PIN = 6;
@@ -393,8 +396,20 @@ bool calibrationValid() {
 
 int sensorPercent(int i) {
 
-  if (!SENSOR_USED[i] || !calibrationValid() || sensorFault) {
+  if (!calibrationValid() || sensorFault) {
     return -1;
+  }
+
+  // A sensor outside SENSOR_USED still shows its own percentage when it has its own
+  // valid references and a sane reading. It never counts in the average or the decision.
+  if (!SENSOR_USED[i]) {
+    if (
+      dryADC[i] < 0 || wetADC[i] < 0 ||
+      abs(dryADC[i] - wetADC[i]) < MIN_CALIBRATION_SPAN_ADC ||
+      rawADC[i] <= ADC_BAD_LOW || rawADC[i] >= ADC_BAD_HIGH
+    ) {
+      return -1;
+    }
   }
 
   float pct =

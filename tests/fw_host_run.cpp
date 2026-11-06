@@ -85,6 +85,8 @@ int main() {
   cmd("$CAL 10 1 2 3 4 5\n"); run(1);             // rejected: rail values / spans
   CHECK(dryADC[0] == DRYC[0]);
   cmd(CAL_LINE); run(2);
+  setPct(62); g_adc[2] = countAt(1, 20); run(3);   // S2 shown with its own %, not in the average
+  CHECK(sensorPercent(1) == 20 && averagePercent() == 62 && !sensorFault);
   cmd("L"); run(3);
   cmd("X"); cmd("?"); run(2);
   CHECK(autoPaused);
