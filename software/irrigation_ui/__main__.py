@@ -35,8 +35,8 @@ def main(argv=None):
                          "the page can send pump commands")
     ap.add_argument("--log-dir", type=Path, default=Path("logs"))
     ap.add_argument("--no-log", action="store_true")
-    ap.add_argument("--start-pct", type=int, default=60, help="displayed start threshold; must match START_WATERING_PCT in the .ino")
-    ap.add_argument("--stop-pct", type=int, default=98, help="displayed stop threshold; must match STOP_WATERING_PCT in the .ino")
+    ap.add_argument("--start-pct", type=int, default=50, help="displayed start threshold; must match START_WATERING_PCT in the .ino")
+    ap.add_argument("--stop-pct", type=int, default=70, help="displayed stop threshold; must match STOP_WATERING_PCT in the .ino")
     ap.add_argument("--speed", type=float, default=1.0, help="simulator / replay speed factor")
     ap.add_argument("--loop", action="store_true", help="replay: start again at the end")
     ap.add_argument("--sim-verified", action="store_true",

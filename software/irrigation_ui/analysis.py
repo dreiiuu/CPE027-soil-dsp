@@ -167,18 +167,14 @@ def raw_for_percent(pct: float, dry: float, wet: float) -> int:
 
 
 # ------------------------------------------------------------------ health / calibration quality
-def sensor_report(raw: Sequence[Sequence[int]], pct: Sequence[Sequence[Optional[int]]], t_s, pump, used=None) -> dict:
-    """raw / pct are per-sample triples. Uses the last 60 samples for noise, the last 10 min for drift.
-    `used`: which sensors the board uses; unused ones get no statistics and no warnings."""
-    used = list(used) if used else [True] * 3
+def sensor_report(raw: Sequence[Sequence[int]], pct: Sequence[Sequence[Optional[int]]], t_s, pump) -> dict:
+    """raw / pct are per-sample triples. Uses the last 60 samples for noise, the last 10 min for drift."""
     rep = {"noise_sd": [None] * 3, "spikes_recent": [0] * 3, "drift_counts_per_h": [None] * 3,
            "spread_pct": None, "pinned": [False] * 3, "warnings": []}
     if not raw:
         return rep
     n = len(raw)
     for i in range(3):
-        if not used[i]:
-            continue
         col = [r[i] for r in raw]
         sd = noise_sd(col[-60:])
         rep["noise_sd"][i] = None if sd is None else round(sd, 1)
@@ -190,14 +186,12 @@ def sensor_report(raw: Sequence[Sequence[int]], pct: Sequence[Sequence[Optional[
             rep["drift_counts_per_h"][i] = None if s is None else round(s, 1)
         recent = [p[i] for p in pct[-120:] if p[i] is not None]
         rep["pinned"][i] = len(recent) >= 120 and (all(v == 0 for v in recent) or all(v == 100 for v in recent))
-    keep = [i for i in range(3) if used[i]]
-    last = [pct[-1][i] for i in keep]
-    if len(last) >= 2 and all(v is not None for v in last):
+    last = pct[-1]
+    if all(v is not None for v in last):
         rep["spread_pct"] = max(last) - min(last)
-        recent = [[p[i] for i in keep] for p in pct[-30:]]
-        recent = [p for p in recent if all(v is not None for v in p)]
+        recent = [p for p in pct[-30:] if all(v is not None for v in p)]
         if len(recent) >= 30 and all(max(p) - min(p) > 25 for p in recent):
-            rep["warnings"].append("The probes disagree by more than 25 points for 30 s: check insertion depth, "
+            rep["warnings"].append("The three probes disagree by more than 25 points for 30 s: check insertion depth, "
                                    "placement, or redo the D/W calibration.")
     for i in range(3):
         if rep["pinned"][i]:
@@ -208,7 +202,7 @@ def sensor_report(raw: Sequence[Sequence[int]], pct: Sequence[Sequence[Optional[
             rep["warnings"].append(f"S{i + 1} is noisy (about {sd} counts sample to sample): check the AO wire, ground and "
                                    "routing away from the pump wires.")
     drifts = [d for d in rep["drift_counts_per_h"] if d is not None]
-    if len(drifts) == 3:                # needs three sensors to say which one is the odd one out
+    if len(drifts) == 3:
         med = statistics.median(drifts)
         for i, d in enumerate(rep["drift_counts_per_h"]):
             if abs(d - med) > 150:

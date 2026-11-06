@@ -139,7 +139,7 @@ details.fold>summary:hover{color:var(--fg)}
 
 <script>
 const $=id=>document.getElementById(id);
-let calLockUntil=0, S=null, H={seq:[],pc:[],ms:[],raw:[],filt:[],pct:[],avg:[],pump:[]}, F=null, lastSeq=0;
+let S=null, H={seq:[],pc:[],ms:[],raw:[],filt:[],pct:[],avg:[],pump:[]}, F=null, lastSeq=0;
 const CONFIRM={
  D:"Save the DRY reference?\n\nAll three probes must be in your dry reference soil, inserted to the line and left still.",
  W:"Save the WET reference?\n\nAll three probes must be in your wet reference soil, inserted to the line and left still.",
@@ -154,11 +154,7 @@ async function cmd(c,values,prompt){
   let confirm=false;
   if(S&&S.commands[c]&&S.commands[c].risky){if(!window.confirm(prompt||CONFIRM[c]))return;confirm=true}
   try{const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:c,confirm,values})});
-    const j=await r.json();$('cmdmsg').textContent=(j.ok?'OK: ':'Refused: ')+j.msg;$('cmdmsg').className=j.ok?'on':'bad';
-    if(j.ok&&(c==='D'||c==='W')){              // one tap is enough: lock both calibrate buttons for 3 s
-      calLockUntil=Date.now()+3000;for(const k of ['bD','bW']){const b=$(k);if(b)b.disabled=true}
-      $('cmdmsg').textContent=c==='D'?'DRY sent once. Check Events for "dry_reference_saved", then put the probes in water and press Calibrate WET once.'
-        :'WET sent once. Check Events for "wet_reference_saved" and "calibration_valid". If a sensor is named as rejected, fix its wiring first.'}}
+    const j=await r.json();$('cmdmsg').textContent=(j.ok?'OK: ':'Refused: ')+j.msg;$('cmdmsg').className=j.ok?'on':'bad'}
   catch(e){$('cmdmsg').textContent='Request failed: '+e;$('cmdmsg').className='bad'}
 }
 function cmdv(c,v,p){return cmd(c,v,p)}
@@ -169,8 +165,7 @@ function useCand(k){const c=S&&S.analysis.reference_candidate;if(!c||c.value[0]=
   if(!c.stable&&!window.confirm('The readings have not settled yet (still moving or noisy). Use them anyway?'))return;
   for(let i=0;i<3;i++)$(k+i).value=c.value[i];calRender()}
 function loadBoard(){const t=S&&S.t;if(!t||!t.dry_ref)return;for(let i=0;i<3;i++){$('d'+i).value=t.dry_ref[i]??'';$('w'+i).value=t.wet_ref[i]??''}calRender()}
-const usedS=i=>!(S&&S.t&&S.t.sensors_used)||S.t.sensors_used[i];
-function sendCal(){const v=[0,1,2].map(i=>num('d'+i)??(usedS(i)?null:0)).concat([0,1,2].map(i=>num('w'+i)??(usedS(i)?null:0)));
+function sendCal(){const v=[0,1,2].map(i=>num('d'+i)).concat([0,1,2].map(i=>num('w'+i)));
   if(v.some(x=>x==null)){$('cmdmsg').textContent='Refused: fill in all six values';$('cmdmsg').className='bad';return}
   cmd('CAL',v,'Store these references on the board?\n\nDRY: '+v.slice(0,3).join(', ')+'\nWET: '+v.slice(3).join(', ')+'\n\nThis replaces the saved calibration and arms AUTO (if the pump hardware is verified).')}
 function tpChanged(){$('tpv').textContent=$('tp').value+'%';const t=S&&S.t;if(!t||!t.dry_ref||t.dry_ref[0]==null||t.wet_ref[0]==null)return;
@@ -209,10 +204,10 @@ function render(){
   const th=S.thresholds;$('thr').textContent=`start below ${th.start_pct}%, stop at ${th.stop_pct}% (relative, not VWC)`;
   if(!$('btns').childElementCount)buildButtons();
   const rx=!!t&&live;
-  for(const k of ['A','T','D','W','L','Q']){const b=$('b'+k);if(b)b.disabled=(c.source==='replay'||!rx)||((k==='D'||k==='W')&&Date.now()<calLockUntil)}
+  for(const k of ['A','T','D','W','L','Q']){const b=$('b'+k);if(b)b.disabled=c.source==='replay'||!rx}
   const bx=$('bX');if(bx)bx.disabled=c.source==='replay';
   if(!t){$('sens').innerHTML='<tr><td colspan="8">waiting for telemetry...</td></tr>';return}
-  $('avg').textContent=t.average_pct==null?(t.calibrated?'NO SENSOR':'CAL REQ'):t.average_pct+'%';
+  $('avg').textContent=t.average_pct==null?(t.sensor_fault?'FAULT':'CAL REQ'):t.average_pct+'%';
   $('avg').className='v '+(t.average_pct==null?'warn':(t.water_needed?'bad':'on'));
   $('demand').textContent=t.status||'--';$('demand').className='v '+(t.status==='DRY'?'warn':(t.status==='WET'?'on':'off'));
   $('pump').textContent=t.pump_commanded?'ON':'OFF';$('pump').className='v '+(t.pump_commanded?'on':'off');
@@ -222,7 +217,7 @@ function render(){
   $('hw').textContent=t.hardware_verified?'pump hardware verified':'pump blocked: hardware not verified';$('hw').className=t.hardware_verified?'':'warn';
   const A=S.analysis.sensors||{};
   let rows='';for(let i=0;i<3;i++){const p=t.moisture_pct[i];
-    rows+=`<tr class="${t.test_input?'test':''}"><td>S${i+1}${t.test_input?' (TEST)':''}${usedS(i)?'':' <small>(shown only, not in average)</small>'}</td><td>${i+1}</td><td>${t.raw[i]}</td><td>${t.filtered_raw[i]}</td><td class="${p==null?'warn':''}">${p==null?(t.calibrated&&usedS(i)?'skipped':'--'):p+'%'}</td>
+    rows+=`<tr class="${t.test_input?'test':''}"><td>S${i+1}${t.test_input?' (TEST)':''}</td><td>${i+1}</td><td>${t.raw[i]}</td><td>${t.filtered_raw[i]}</td><td class="${p==null?'warn':''}">${p==null?'--':p+'%'}</td>
     <td>${fmt(A.noise_sd&&A.noise_sd[i],1)}</td><td>${A.spikes_recent?A.spikes_recent[i]:'--'}</td><td>${A.drift_counts_per_h&&A.drift_counts_per_h[i]!=null?A.drift_counts_per_h[i]:'--'}</td></tr>`}
   $('sens').innerHTML=rows;calRender();
   const an=S.analysis;let h='';

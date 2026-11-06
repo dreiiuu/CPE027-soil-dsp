@@ -60,45 +60,32 @@ int main() {
   setCounts(2580, 3166, 3197);                    // the raw readings reported in the handoff
   setup();
   CHECK(g_pin[RELAY_PIN] == HIGH);                // relay de-energised at boot
-  run(5);                                         // built-in calibration: % from the first record (v2.8)
-  CHECK(calibrationValid() && averagePercent() >= 0);
+  run(5);                                         // uncalibrated: raw only, percentages null
   CHECK(!autoEnabled);
-  setCounts(DRYC[0], 0, DRYC[2]);                  // S2 disconnected (reads 0): must not block calibration
-  cmd("DD"); run(3);                               // double tap: the second D is ignored
-  CHECK(dryADC[0] == DRYC[0] && dryADC[2] == DRYC[2] && !sensorFault);
-  setCounts(WETC[0], 0, WETC[2]); cmd("W"); run(2);
+  setCounts(DRYC[0], DRYC[1], DRYC[2]); cmd("D"); run(2);
+  setCounts(WETC[0], WETC[1], WETC[2]); cmd("W"); run(2);
   CHECK(calibrationValid() && !autoPaused && !autoEnabled);   // hardware not verified: no AUTO
-  CHECK(sensorPercent(1) < 0);                     // S2 not used: no percentage
-  setPct(62); g_adc[2] = 0; run(8);
-  CHECK(!sensorFault && averagePercent() == 62);   // average of S1 and S3 only
+  setPct(62); run(8);
   setPct(40); run(6);                             // below 50 %: water needed, LED on
   CHECK(waterDemand && g_pin[LED_PIN] == HIGH);
   CHECK(statusKnown && soilDry);                  // DRY below the start threshold
   cmd("A"); run(2); CHECK(!autoEnabled);          // denied: hardware not verified
   cmd("T"); run(2); CHECK(!pumpCommandOn);
-  g_adc[3] = 0; run(3);                           // S3 AO disconnected: warning only, S1 carries on
-  CHECK(sensorFault && !autoPaused && sensorPercent(2) < 0 && averagePercent() == 40 && waterDemand);
-  g_adc[1] = 4095; run(3);                        // S1 at the rail too: no usable sensor
-  CHECK(averagePercent() < 0 && !waterDemand && !autoPaused && !statusKnown);
-  setPct(100); run(4);
+  g_adc[3] = 0; run(3);                           // S3 AO disconnected -> fault, paused
+  CHECK(sensorFault && autoPaused);
+  setPct(75); run(4);
   CHECK(!sensorFault && !waterDemand && statusKnown && !soilDry);   // WET from the stop threshold
   cmd("$RAW 2800 3200 3220\n"); run(3);           // bench test input
   CHECK(testInput && rawADC[0] == 2800);
   cmd("$RAW OFF\n"); run(2); CHECK(!testInput);
-  cmd("$CAL 10 1 2 3 4 5\n"); run(1);             // rejected: no valid pair at all
+  cmd("$CAL 10 1 2 3 4 5\n"); run(1);             // rejected: rail values / spans
   CHECK(dryADC[0] == DRYC[0]);
-  cmd("$CAL 2900 3380 0 1500 1700 0\n"); run(1);   // S3 pair bad: S1 stored, S3 keeps its refs
-  CHECK(dryADC[0] == 2900 && dryADC[2] == DRYC[2] && wetADC[2] == WETC[2]);
-  setCounts(DRYC[0], 0, 0); cmd("D"); run(3);      // S3 at 0 while calibrating: skipped, S1 stored
-  CHECK(dryADC[0] == DRYC[0] && dryADC[2] == DRYC[2]);
   cmd(CAL_LINE); run(2);
-  setPct(62); g_adc[2] = countAt(1, 20); run(3);   // S2 shown with its own %, not in the average
-  CHECK(sensorPercent(1) == 20 && averagePercent() == 62 && !sensorFault);
   cmd("L"); run(3);
   cmd("X"); cmd("?"); run(2);
   CHECK(autoPaused);
   reboot(); run(3);
-  CHECK(calibrationValid() && !autoPaused);       // calibration kept; a pause does not survive a restart (v2.8)
+  CHECK(calibrationValid() && autoPaused);        // both survived the power cycle
   CHECK(switchOns == 0);
   std::fflush(stdout);
   if (failures) std::fprintf(stderr, "%d firmware host-run check(s) FAILED\n", failures);
@@ -108,10 +95,9 @@ int main() {
 // ---------------------------------------------------------------- PUMP_HARDWARE_VERIFIED=true copy
 int main() {
   g_serial_echo = true;
-  setCounts(DEFAULT_WET_ADC[0], DEFAULT_WET_ADC[1], DEFAULT_WET_ADC[2]);
-  setup(); run(3);                                // empty NVS: built-in calibration, works at once (v2.8)
-  CHECK(calibrationValid() && dryADC[0] == DEFAULT_DRY_ADC[0] && autoEnabled && averagePercent() == 100);
-  CHECK(switchOns == 0);
+  setPct(60);
+  setup(); run(3);
+  CHECK(!autoEnabled);                            // not calibrated yet
   setPct(40);
   cmd(CAL_LINE); run(4);                          // typed-in references arm AUTO (v2) ...
   CHECK(calibrationValid() && autoEnabled && !autoPaused && waterDemand);
@@ -133,11 +119,10 @@ int main() {
   cmd("X"); run(1);                               // clears lockout, pauses
   CHECK(!safetyLockout && autoPaused && !autoEnabled);
   reboot(); run(3);
-  CHECK(!autoPaused && autoEnabled);              // v2.8: a pause does not survive a reboot
-  cmd("X"); run(1); CHECK(autoPaused && !autoEnabled);
+  CHECK(autoPaused && !autoEnabled);              // pause survives a reboot too
 
-  // manual pulse runs its full 1.5 s even at 100 % (v1 cut it short)
-  setPct(100); run(3);
+  // manual pulse runs its full 1.5 s even at 75 % (v1 cut it short)
+  setPct(75); run(3);
   longestOn = 0; cmd("T"); run(3);
   CHECK(longestOn >= PUMP_PULSE_MS - 10 && switchOns == 4);
 
@@ -152,7 +137,7 @@ int main() {
   unsigned long boot = settleFromMs;
   run(4); CHECK(switchOns == 4);
   run(3); CHECK(switchOns == 5 && onSince - boot >= BOOT_SETTLE_MS);
-  setPct(100); run(25);                            // watering worked: demand cleared, no lockout
+  setPct(75); run(25);                            // watering worked: demand cleared, no lockout
   CHECK(!waterDemand && !safetyLockout && pulsesUsed == 0 && switchOns == 5);
 
   // bench test with $RAW: pretend 45 % without touching the soil
@@ -163,15 +148,12 @@ int main() {
   cmd("$RAW OFF\n"); run(6);
   CHECK(!testInput && !waterDemand);              // back on the real (wet) probes
 
-  // sensor fault is only a warning: AUTO keeps running on the remaining sensor
-  g_adc[1] = 4095; run(3);                        // S1 at the rail (S2 is not used)
-  CHECK(sensorFault && !autoPaused && autoEnabled && averagePercent() == 100 && !waterDemand);
-  g_adc[3] = countAt(2, 40); run(4);              // S3 alone says dry: it waters on S3
-  CHECK(waterDemand && switchOns == 7);
-  g_adc[3] = 0; run(3);                           // no usable sensor: pump off, nothing paused
-  CHECK(averagePercent() < 0 && !waterDemand && !pumpCommandOn && autoEnabled && !autoPaused);
-  setPct(100); run(3);                             // sensors back: carries on by itself, no A needed
-  CHECK(!sensorFault && autoEnabled && averagePercent() == 100 && !waterDemand);
+  // sensor fault: pump off, AUTO paused until A
+  g_adc[2] = 4095; run(3);
+  CHECK(sensorFault && autoPaused && !autoEnabled && !pumpCommandOn);
+  setPct(75); run(3);
+  CHECK(!sensorFault && !autoEnabled);
+  cmd("A"); run(2); CHECK(autoEnabled);
   std::fflush(stdout);
   if (failures) std::fprintf(stderr, "%d verified-build check(s) FAILED\n", failures);
   return failures ? 1 : 0;

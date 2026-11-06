@@ -1,6 +1,6 @@
 /*
   SMART SOIL IRRIGATION - ESP32-S3 N16R8
-  Version 2.8 - built-in calibration (no D/W needed), 60/98 % thresholds, a faulty sensor is only a warning
+  Version 2.4 - fast moisture monitoring and immediate threshold stop, no TFT
 
   HARDWARE PINS
   Sensors: GPIO 1, 2, 3
@@ -20,20 +20,9 @@
   FAST RESPONSE UPDATE (v2.3)
   - Moisture control samples every 100 ms (10 times per second).
   - The moving-average filter is reduced from 5 to 3 samples to reduce lag.
-  - When the filtered three-sensor average reaches 98% (STOP_WATERING_PCT), the pump is switched OFF
+  - When the filtered three-sensor average reaches 70%, the pump is switched OFF
     during that control pass, without waiting for the pulse or soak timer.
   - Serial telemetry remains at 1-second intervals.
-
-  v2.7: a faulty or uncalibrated sensor is skipped with a warning and the others keep working:
-  no pause, no stop. Calibration stores the good sensors and skips a bad one. Only when no
-  deciding sensor is usable is the pump held off (and it continues by itself once one is).
-
-  v2.6: a sensor outside SENSOR_USED (S2) is shown with its own calibrated percentage, but it is
-  never counted in the average, the fault check or the pump decision.
-
-  v2.5: SENSOR_USED picks the sensors that are connected (S2 is disconnected). Unused sensors
-  are ignored for faults, calibration checks and the average. A second D/W tap within 2 s is
-  ignored, and a refused calibration names the sensor that caused it.
 
   v2.4: the TFT display was removed from the hardware. Its code and the Adafruit
   libraries are gone; GPIO 8-12 are free.
@@ -64,10 +53,6 @@
 // -------- HARDWARE PINS --------
 const uint8_t SENSOR_PINS[3] = {1, 2, 3};
 
-// Sensors that decide the watering. false (S2) = shown only: ignored for faults, the
-// calibration check and the average; its own percentage is still sent to the dashboard.
-const bool SENSOR_USED[3] = {true, false, true};
-
 const uint8_t LED_PIN = 6;
 const uint8_t RELAY_PIN = 5;
 
@@ -81,16 +66,9 @@ const bool PUMP_HARDWARE_VERIFIED = true;
 
 const bool AUTO_START_AFTER_CALIBRATION = true;
 
-// -------- BUILT-IN CALIBRATION --------
-// Raw ADC references of this board's probes, from the 30 Oct 2026 session log (dry = probe in dry
-// air/soil, wet = probe in water). Used whenever a sensor has no valid stored calibration, so the
-// system works straight after upload without pressing D/W. D/W or $CAL still override them.
-const int DEFAULT_DRY_ADC[3] = {1504, 1644, 1943};
-const int DEFAULT_WET_ADC[3] = {1096, 624, 1187};
-
 // -------- IRRIGATION SETTINGS --------
-const int START_WATERING_PCT = 60;   // DRY below 60 % -> water
-const int STOP_WATERING_PCT = 98;    // WET from 98 % -> stop
+const int START_WATERING_PCT = 50;
+const int STOP_WATERING_PCT = 70;
 
 const unsigned long SAMPLE_INTERVAL_MS = 100UL;
 const unsigned long UI_UPDATE_INTERVAL_MS = 1000UL;
@@ -104,7 +82,6 @@ const int MIN_CALIBRATION_SPAN_ADC = 150;
 
 const int ADC_BAD_LOW = 10;
 const int ADC_BAD_HIGH = 4085;
-const unsigned long CAL_TAP_GUARD_MS = 2000UL;   // ignore a repeated D/W tap within this time
 
 const uint8_t MEDIAN_POINTS = 3;
 const uint8_t MA_POINTS = 3;
@@ -213,11 +190,6 @@ bool ledTestActive = false;
 bool ledState = false;
 
 bool testInput = false;
-
-bool noUsableSensor = false;
-
-bool calTapped = false;
-unsigned long lastCalTapMs = 0;
 
 int testRaw[3] = {0, 0, 0};
 
@@ -335,15 +307,6 @@ void setLockout(bool l) {
 // SENSOR READING
 // =====================================================
 
-bool sensorBad(int i) {
-  return rawADC[i] <= ADC_BAD_LOW || rawADC[i] >= ADC_BAD_HIGH;
-}
-
-bool refsValid(int i) {
-  return dryADC[i] >= 0 && wetADC[i] >= 0 &&
-         abs(dryADC[i] - wetADC[i]) >= MIN_CALIBRATION_SPAN_ADC;
-}
-
 int analogAverage(uint8_t pin, int samples) {
 
   long total = 0;
@@ -379,12 +342,14 @@ void sampleSensors() {
 
   filterInitialized = true;
 
-  // sensorFault = at least one deciding sensor reads 0 or 4095 (a warning only)
   sensorFault = false;
 
   for (int i = 0; i < 3; i++) {
 
-    if (SENSOR_USED[i] && sensorBad(i)) {
+    if (
+      rawADC[i] <= ADC_BAD_LOW ||
+      rawADC[i] >= ADC_BAD_HIGH
+    ) {
       sensorFault = true;
     }
   }
@@ -394,21 +359,26 @@ void sampleSensors() {
 // CALIBRATION
 // =====================================================
 
-// Calibrated = at least one deciding sensor has valid dry/wet references.
 bool calibrationValid() {
 
   for (int i = 0; i < 3; i++) {
-    if (SENSOR_USED[i] && refsValid(i)) return true;
+
+    if (
+      dryADC[i] < 0 ||
+      wetADC[i] < 0 ||
+      abs(dryADC[i] - wetADC[i]) <
+        MIN_CALIBRATION_SPAN_ADC
+    ) {
+      return false;
+    }
   }
 
-  return false;
+  return true;
 }
 
-// Each sensor on its own: -1 (skipped) when it has no valid references or reads 0 / 4095.
-// A sensor outside SENSOR_USED (S2) is shown but never counts in the average.
 int sensorPercent(int i) {
 
-  if (!refsValid(i) || sensorBad(i)) {
+  if (!calibrationValid() || sensorFault) {
     return -1;
   }
 
@@ -420,25 +390,19 @@ int sensorPercent(int i) {
   return constrain((int)lroundf(pct), 0, 100);
 }
 
-// Average of the deciding sensors that are usable right now; -1 if none is.
 int averagePercent() {
 
-  int sum = 0;
-  int used = 0;
-
-  for (int i = 0; i < 3; i++) {
-    int p = SENSOR_USED[i] ? sensorPercent(i) : -1;
-    if (p >= 0) {
-      sum += p;
-      used++;
-    }
-  }
-
-  if (used == 0) {
+  if (!calibrationValid() || sensorFault) {
     return -1;
   }
 
-  return (int)lroundf(sum / (float)used);
+  return (int)lroundf(
+    (
+      sensorPercent(0) +
+      sensorPercent(1) +
+      sensorPercent(2)
+    ) / 3.0f
+  );
 }
 
 void updateSoilStatus() {
@@ -472,6 +436,7 @@ bool autoAllowed() {
     AUTO_START_AFTER_CALIBRATION &&
     PUMP_HARDWARE_VERIFIED &&
     calibrationValid() &&
+    !sensorFault &&
     !autoPaused &&
     !safetyLockout;
 }
@@ -574,32 +539,18 @@ void captureCalibration(bool dry) {
     }
 
     measured[i] = (int)(sum / 20);
-  }
 
-  // A sensor at 0 / 4095 is skipped (keeps its old reference); the others are stored.
-  int good = 0;
+    if (
+      measured[i] <= ADC_BAD_LOW ||
+      measured[i] >= ADC_BAD_HIGH
+    ) {
 
-  for (int i = 0; i < 3; i++) {
+      Serial.println(
+        "#EVENT calibration_rejected_rail_reading"
+      );
 
-    if (measured[i] <= ADC_BAD_LOW || measured[i] >= ADC_BAD_HIGH) {
-
-      Serial.print("#EVENT calibration_skipped_S");
-      Serial.print(i + 1);
-      Serial.println("_reads_0_or_4095_check_wiring");
-
-      measured[i] = dry ? dryADC[i] : wetADC[i];
-
-    } else if (SENSOR_USED[i]) {
-
-      good++;
+      return;
     }
-  }
-
-  if (good == 0) {
-
-    Serial.println("#EVENT calibration_rejected_no_usable_sensor");
-
-    return;
   }
 
   if (!testInput) {
@@ -618,6 +569,8 @@ void captureCalibration(bool dry) {
     }
 
     filterInitialized = true;
+
+    sensorFault = false;
   }
 
   Serial.println(
@@ -644,6 +597,26 @@ void controlWatering() {
     return;
   }
 
+  if (sensorFault) {
+
+    if (autoEnabled) {
+      Serial.println(
+        "#EVENT auto_stopped_sensor_fault"
+      );
+    }
+
+    autoEnabled = false;
+    waterDemand = false;
+
+    setPump(false);
+
+    if (calibrationValid()) {
+      setPaused(true, "sensor_fault");
+    }
+
+    return;
+  }
+
   if (!calibrationValid()) {
 
     autoEnabled = false;
@@ -657,29 +630,6 @@ void controlWatering() {
   }
 
   int pct = averagePercent();
-
-  // No usable deciding sensor right now: no decision, pump off, nothing paused.
-  // It carries on by itself as soon as one sensor reads normally again.
-  if (pct < 0) {
-
-    if (!noUsableSensor) {
-      Serial.println("#EVENT no_usable_sensor_pump_held_off");
-      noUsableSensor = true;
-    }
-
-    waterDemand = false;
-
-    if (!manualPulse) {
-      setPump(false);
-    }
-
-    return;
-  }
-
-  if (noUsableSensor) {
-    Serial.println("#EVENT sensor_usable_again");
-    noUsableSensor = false;
-  }
 
   if (pct < START_WATERING_PCT) {
     waterDemand = true;
@@ -755,7 +705,7 @@ void updateLED() {
   bool shouldLight =
     ledTestActive ||
     (
-      calibrationValid() && averagePercent() < 0 &&
+      sensorFault &&
       ((millis() / 400UL) % 2 == 0)
     ) ||
     (
@@ -895,24 +845,6 @@ void emitTelemetry() {
   Serial.print(",\"wet_ref\":");
   printRefs(wetADC);
 
-  Serial.print(",\"sensors_used\":[");
-
-  for (int i = 0; i < 3; i++) {
-    if (i) Serial.print(',');
-    Serial.print(SENSOR_USED[i] ? "true" : "false");
-  }
-
-  Serial.print(']');
-
-  Serial.print(",\"sensor_ok\":[");
-
-  for (int i = 0; i < 3; i++) {
-    if (i) Serial.print(',');
-    Serial.print(sensorPercent(i) >= 0 ? "true" : "false");
-  }
-
-  Serial.print(']');
-
   if (statusKnown) {
 
     Serial.print(",\"status\":");
@@ -1006,10 +938,6 @@ void handleLine(const char* line) {
       return;
     }
 
-    // A sensor whose pair is at a rail or closer than 150 counts is skipped (keeps its
-    // old references); the others are stored. Rejected only if no deciding sensor is valid.
-    int good = 0;
-
     for (int i = 0; i < 3; i++) {
 
       if (
@@ -1021,26 +949,12 @@ void handleLine(const char* line) {
           MIN_CALIBRATION_SPAN_ADC
       ) {
 
-        Serial.print("#EVENT cal_skipped_S");
-        Serial.print(i + 1);
-        Serial.println("_rail_value_or_span_below_150");
+        Serial.println(
+          "#EVENT cal_rejected_rail_value_or_span_below_150"
+        );
 
-        v[i] = dryADC[i];
-        v[i + 3] = wetADC[i];
-
-      } else if (SENSOR_USED[i]) {
-
-        good++;
+        return;
       }
-    }
-
-    if (good == 0) {
-
-      Serial.println(
-        "#EVENT cal_rejected_no_usable_sensor"
-      );
-
-      return;
     }
 
     autoEnabled = false;
@@ -1138,16 +1052,13 @@ void handleSerial() {
       lineMode = true;
       lineLen = 0;
 
-    } else if (c == 'D' || c == 'd' || c == 'W' || c == 'w') {
+    } else if (c == 'D' || c == 'd') {
 
-      // One tap is enough: a repeated tap within 2 s is ignored.
-      if (calTapped && millis() - lastCalTapMs < CAL_TAP_GUARD_MS) {
-        Serial.println("#EVENT calibration_tap_ignored_wait_2s");
-      } else {
-        calTapped = true;
-        lastCalTapMs = millis();
-        captureCalibration(c == 'D' || c == 'd');
-      }
+      captureCalibration(true);
+
+    } else if (c == 'W' || c == 'w') {
+
+      captureCalibration(false);
 
     } else if (c == 'L' || c == 'l') {
 
@@ -1198,10 +1109,10 @@ void handleSerial() {
           "#EVENT auto_denied_calibrate_D_then_W"
         );
 
-      } else if (averagePercent() < 0) {
+      } else if (sensorFault) {
 
         Serial.println(
-          "#EVENT auto_denied_no_usable_sensor"
+          "#EVENT auto_denied_sensor_fault"
         );
 
       } else if (pumpCommandOn) {
@@ -1252,6 +1163,7 @@ void handleSerial() {
 
       if (
         !PUMP_HARDWARE_VERIFIED ||
+        sensorFault ||
         autoEnabled ||
         safetyLockout ||
         pumpCommandOn
@@ -1324,18 +1236,12 @@ void setup() {
       WET_KEYS[i],
       -1
     );
-
-    // no valid stored calibration for this sensor: use the built-in values
-    if (!refsValid(i)) {
-      dryADC[i] = DEFAULT_DRY_ADC[i];
-      wetADC[i] = DEFAULT_WET_ADC[i];
-    }
   }
 
-  // v2.8: a pause (X) no longer survives a restart, so the board always starts working
-  // by itself. The safety lockout (3 pulses without reaching the stop level) still does.
-  autoPaused = false;
-  prefs.putBool("paused", false);
+  autoPaused = prefs.getBool(
+    "paused",
+    false
+  );
 
   safetyLockout = prefs.getBool(
     "lockout",
@@ -1358,7 +1264,7 @@ void setup() {
   autoEnabled = autoAllowed();
 
   Serial.println(
-    "#EVENT esp32_s3_irrigation_v2_8_fast_response_boot"
+    "#EVENT esp32_s3_irrigation_v2_3_fast_response_boot"
   );
 
   Serial.println(
@@ -1446,7 +1352,7 @@ void loop() {
   }
 
   // FAST CONTROL LOOP:
-  // Read sensors and evaluate the 98% stop threshold every 100 ms.
+  // Read sensors and evaluate the 70% stop threshold every 100 ms.
   if (
     now - lastSampleMs >= SAMPLE_INTERVAL_MS
   ) {
