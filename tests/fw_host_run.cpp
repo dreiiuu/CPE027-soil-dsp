@@ -75,15 +75,21 @@ int main() {
   CHECK(statusKnown && soilDry);                  // DRY below the start threshold
   cmd("A"); run(2); CHECK(!autoEnabled);          // denied: hardware not verified
   cmd("T"); run(2); CHECK(!pumpCommandOn);
-  g_adc[3] = 0; run(3);                           // S3 AO disconnected -> fault, paused
-  CHECK(sensorFault && autoPaused);
+  g_adc[3] = 0; run(3);                           // S3 AO disconnected: warning only, S1 carries on
+  CHECK(sensorFault && !autoPaused && sensorPercent(2) < 0 && averagePercent() == 40 && waterDemand);
+  g_adc[1] = 4095; run(3);                        // S1 at the rail too: no usable sensor
+  CHECK(averagePercent() < 0 && !waterDemand && !autoPaused && !statusKnown);
   setPct(75); run(4);
   CHECK(!sensorFault && !waterDemand && statusKnown && !soilDry);   // WET from the stop threshold
   cmd("$RAW 2800 3200 3220\n"); run(3);           // bench test input
   CHECK(testInput && rawADC[0] == 2800);
   cmd("$RAW OFF\n"); run(2); CHECK(!testInput);
-  cmd("$CAL 10 1 2 3 4 5\n"); run(1);             // rejected: rail values / spans
+  cmd("$CAL 10 1 2 3 4 5\n"); run(1);             // rejected: no valid pair at all
   CHECK(dryADC[0] == DRYC[0]);
+  cmd("$CAL 2900 3380 0 1500 1700 0\n"); run(1);   // S3 pair bad: S1 stored, S3 keeps its refs
+  CHECK(dryADC[0] == 2900 && dryADC[2] == DRYC[2] && wetADC[2] == WETC[2]);
+  setCounts(DRYC[0], 0, 0); cmd("D"); run(3);      // S3 at 0 while calibrating: skipped, S1 stored
+  CHECK(dryADC[0] == DRYC[0] && dryADC[2] == DRYC[2]);
   cmd(CAL_LINE); run(2);
   setPct(62); g_adc[2] = countAt(1, 20); run(3);   // S2 shown with its own %, not in the average
   CHECK(sensorPercent(1) == 20 && averagePercent() == 62 && !sensorFault);
@@ -154,12 +160,15 @@ int main() {
   cmd("$RAW OFF\n"); run(6);
   CHECK(!testInput && !waterDemand);              // back on the real (wet) probes
 
-  // sensor fault: pump off, AUTO paused until A
+  // sensor fault is only a warning: AUTO keeps running on the remaining sensor
   g_adc[1] = 4095; run(3);                        // S1 at the rail (S2 is not used)
-  CHECK(sensorFault && autoPaused && !autoEnabled && !pumpCommandOn);
-  setPct(75); run(3);
-  CHECK(!sensorFault && !autoEnabled);
-  cmd("A"); run(2); CHECK(autoEnabled);
+  CHECK(sensorFault && !autoPaused && autoEnabled && averagePercent() == 75 && !waterDemand);
+  g_adc[3] = countAt(2, 40); run(4);              // S3 alone says dry: it waters on S3
+  CHECK(waterDemand && switchOns == 7);
+  g_adc[3] = 0; run(3);                           // no usable sensor: pump off, nothing paused
+  CHECK(averagePercent() < 0 && !waterDemand && !pumpCommandOn && autoEnabled && !autoPaused);
+  setPct(75); run(3);                             // sensors back: carries on by itself, no A needed
+  CHECK(!sensorFault && autoEnabled && averagePercent() == 75 && !waterDemand);
   std::fflush(stdout);
   if (failures) std::fprintf(stderr, "%d verified-build check(s) FAILED\n", failures);
   return failures ? 1 : 0;

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import analysis
-from .protocol import COMMANDS, RISKY_COMMANDS, Telemetry, command_line, parse_line
+from .protocol import ADC_BAD_HIGH, ADC_BAD_LOW, COMMANDS, RISKY_COMMANDS, Telemetry, command_line, parse_line
 
 STALE_S = 3.0           # no telemetry for this long while "connected" = no data
 HISTORY = 3600          # samples kept in memory (1 h at 1 Hz); the CSV keeps everything
@@ -144,7 +144,7 @@ class Station:
         the .ino constants and the dashboard disagree. (The firmware latches demand between the two
         thresholds, so only the two outer regions are checked.)"""
         bad = False
-        if t.calibrated and not t.sensor_fault and t.average_pct is not None:
+        if t.calibrated and t.average_pct is not None:
             if t.average_pct < self.start_pct and not t.water_needed:
                 bad = True
             if t.average_pct >= self.stop_pct and t.water_needed:
@@ -210,9 +210,18 @@ class Station:
             a.append(("error", "protocol", f"Telemetry rejected: {self.version_error}. Update this app or the firmware."))
         if t is None:
             return [dict(level=l, code=c, text=x) for l, c, x in a]
-        if t.sensor_fault:
-            a.append(("error", "sensor_fault", "Sensor fault: a reading is at 0 or 4095 counts. AUTO is off and the pump "
-                                               "is held off. Check sensor 3V3, GND and the AO wire."))
+        used = t.sensors_used or [True] * 3
+        if t.sensor_ok is not None:
+            skipped = [f"S{i + 1}" for i in range(3) if used[i] and not t.sensor_ok[i]]
+        else:
+            skipped = [f"S{i + 1}" for i in range(3) if used[i] and not ADC_BAD_LOW < t.raw[i] < ADC_BAD_HIGH]
+        if t.calibrated and t.average_pct is None:
+            a.append(("error", "no_sensor", "No usable sensor: every deciding probe reads 0/4095 or is uncalibrated, so "
+                                            "the pump is held off. It carries on by itself once one reads normally. "
+                                            "Check sensor 3V3, GND and the AO wires."))
+        elif skipped and (t.sensor_fault or t.calibrated):
+            a.append(("warn", "sensor_fault", f"{', '.join(skipped)} skipped (reads 0/4095 or has no calibration). "
+                                              "The system keeps working on the other sensor(s). Check its 3V3, GND and AO wire."))
         if t.test_input:
             a.append(("warn", "test_input", "TEST INPUT active: the board is using raw values sent with $RAW instead of "
                                             "the sensors, and may pump on them. Ends after 5 min, with End test or X."))
@@ -231,9 +240,9 @@ class Station:
         if t.water_needed and t.calibrated:
             a.append(("warn", "water_needed", "Water needed (average below the start threshold)."))
         if t.paused and not t.lockout:
-            a.append(("warn", "paused", "AUTO is PAUSED (X, a sensor fault or a dry calibration). It stays paused "
+            a.append(("warn", "paused", "AUTO is PAUSED (X or a dry calibration). It stays paused "
                                         "after a restart. Send A to resume."))
-        elif not t.auto_mode and t.calibrated and t.hardware_verified and not t.lockout and not t.sensor_fault:
+        elif not t.auto_mode and t.calibrated and t.hardware_verified and not t.lockout and t.average_pct is not None:
             a.append(("info", "manual", "AUTO is off: the board will not water by itself."))
         if self.stats["missing_records"]:
             a.append(("info", "missing", f"{self.stats['missing_records']} telemetry record(s) missing this session."))

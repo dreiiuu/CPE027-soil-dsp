@@ -82,8 +82,10 @@ class Protocol(unittest.TestCase):
         self.assertEqual(command_line("RAW", [2800, 3000, 3100]), "$RAW 2800 3000 3100\n")
         self.assertEqual(command_line("RAW_OFF"), "$RAW OFF\n")
         self.assertEqual(command_line("A"), "A")
-        for bad in ([3200, 3300, 3350, 3100, 2100, 2150],      # S1 span 100 < 150
-                    [4090, 3300, 3350, 2000, 2100, 2150],      # rail
+        # v2.7: one bad pair is skipped by the board, so the line is still sent ...
+        self.assertEqual(command_line("CAL", [3200, 3300, 3350, 3100, 2100, 2150]), "$CAL 3200 3300 3350 3100 2100 2150\n")
+        for bad in ([3200, 3300, 3350, 3100, 3250, 3300],      # ... but not when no pair is valid (spans < 150)
+                    [4090, 0, 4095, 2000, 2100, 2150],         # rails on every sensor
                     [3200, 3300, 3350, 2000, 2100]):           # 5 values
             with self.assertRaises(ValueError):
                 command_line("CAL", bad)
@@ -96,11 +98,13 @@ class Protocol(unittest.TestCase):
         t = parse_line(s).telemetry
         self.assertEqual(t.sensors_used, [True, False, True])
         self.assertEqual(format_telemetry(t), s)
-        # S2 unused: its 0 values must not block $CAL; a used sensor's bad value still does
+        # S2 unused: its 0 values must not block $CAL; neither does one bad used sensor (v2.7)
         self.assertEqual(command_line("CAL", [1504, 0, 1943, 1096, 0, 1187], [True, False, True]),
                          "$CAL 1504 0 1943 1096 0 1187\n")
-        with self.assertRaises(ValueError):
-            command_line("CAL", [1504, 0, 1943, 1096, 0, 1187])
+        self.assertEqual(command_line("CAL", [0, 0, 1943, 0, 0, 1187], [True, False, True]),
+                         "$CAL 0 0 1943 0 0 1187\n")
+        with self.assertRaises(ValueError):                    # only S2 valid, and S2 does not decide
+            command_line("CAL", [0, 3000, 0, 0, 1500, 0], [True, False, True])
         rep = analysis.sensor_report([[1500, 0, 1900], [1500, 1200, 1900]] * 40, [[50, None, 60]] * 80,
                                      list(range(80)), [False] * 80, [True, False, True])
         self.assertIsNone(rep["noise_sd"][1])
@@ -142,7 +146,10 @@ class FirmwareToApp(unittest.TestCase):
         self.assertEqual(t[0].moisture_pct, [None, None, None])
         self.assertTrue(any(x.calibrated and x.average_pct is not None for x in t))
         self.assertTrue(any(x.water_needed and x.led_on for x in t))
-        self.assertTrue(any(x.sensor_fault and x.moisture_pct == [None] * 3 for x in t))
+        # v2.7: a faulty sensor is skipped, the others keep giving a reading and an average
+        self.assertTrue(any(x.sensor_fault and x.moisture_pct[2] is None and x.average_pct is not None
+                            and x.sensor_ok == [True, False, False] for x in t))
+        self.assertTrue(any(x.calibrated and x.average_pct is None and not x.paused for x in t))
         self.assertFalse(any(x.pump_commanded for x in t))            # pump hardware not verified
         self.assertFalse(any(x.hardware_verified for x in t))
         self.assertFalse(any(x.auto_mode for x in t))
@@ -200,7 +207,8 @@ class VerifiedFirmwareToApp(unittest.TestCase):
         self.assertEqual(s["stats"].get("bad_lines", 0), 0)
         self.assertEqual(s["stats"].get("missing_records", 0), 0)
         evs = [e["text"] for e in st.events]
-        for e in ("safety_lockout_max_pulses", "auto_enabled_at_boot", "test_input_on", "auto_paused_sensor_fault"):
+        for e in ("safety_lockout_max_pulses", "auto_enabled_at_boot", "test_input_on", "no_usable_sensor_pump_held_off",
+                  "sensor_usable_again"):
             self.assertIn(e, evs)
         self.assertIsNotNone(s["analysis"]["pulse_responses"])
 
@@ -288,7 +296,7 @@ class StationBehaviour(unittest.TestCase):
         self.assertFalse(st.command("Z", True)[0])
         self.assertFalse(st.command("F", True)[0])          # simulator-only command on a real board
         self.assertFalse(st.command("CAL", False, [3200, 3300, 3350, 2000, 2100, 2150])[0])
-        self.assertFalse(st.command("CAL", True, [3200, 3300, 3350, 3150, 2100, 2150])[0])   # span too small
+        self.assertFalse(st.command("CAL", True, [3200, 3300, 3350, 3150, 3250, 3300])[0])   # every span too small
         self.assertTrue(st.command("CAL", True, [3200, 3300, 3350, 2000, 2100, 2150])[0])
         self.assertFalse(st.command("RAW", False, [2800, 3000, 3100])[0])
         self.assertTrue(st.command("RAW_OFF", False)[0])

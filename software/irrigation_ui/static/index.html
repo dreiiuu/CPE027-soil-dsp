@@ -212,7 +212,7 @@ function render(){
   for(const k of ['A','T','D','W','L','Q']){const b=$('b'+k);if(b)b.disabled=(c.source==='replay'||!rx)||((k==='D'||k==='W')&&Date.now()<calLockUntil)}
   const bx=$('bX');if(bx)bx.disabled=c.source==='replay';
   if(!t){$('sens').innerHTML='<tr><td colspan="8">waiting for telemetry...</td></tr>';return}
-  $('avg').textContent=t.average_pct==null?(t.sensor_fault?'FAULT':'CAL REQ'):t.average_pct+'%';
+  $('avg').textContent=t.average_pct==null?(t.calibrated?'NO SENSOR':'CAL REQ'):t.average_pct+'%';
   $('avg').className='v '+(t.average_pct==null?'warn':(t.water_needed?'bad':'on'));
   $('demand').textContent=t.status||'--';$('demand').className='v '+(t.status==='DRY'?'warn':(t.status==='WET'?'on':'off'));
   $('pump').textContent=t.pump_commanded?'ON':'OFF';$('pump').className='v '+(t.pump_commanded?'on':'off');
@@ -222,7 +222,7 @@ function render(){
   $('hw').textContent=t.hardware_verified?'pump hardware verified':'pump blocked: hardware not verified';$('hw').className=t.hardware_verified?'':'warn';
   const A=S.analysis.sensors||{};
   let rows='';for(let i=0;i<3;i++){const p=t.moisture_pct[i];
-    rows+=`<tr class="${t.test_input?'test':''}"><td>S${i+1}${t.test_input?' (TEST)':''}${usedS(i)?'':' <small>(shown only, not in average)</small>'}</td><td>${i+1}</td><td>${t.raw[i]}</td><td>${t.filtered_raw[i]}</td><td class="${p==null?'warn':''}">${p==null?'--':p+'%'}</td>
+    rows+=`<tr class="${t.test_input?'test':''}"><td>S${i+1}${t.test_input?' (TEST)':''}${usedS(i)?'':' <small>(shown only, not in average)</small>'}</td><td>${i+1}</td><td>${t.raw[i]}</td><td>${t.filtered_raw[i]}</td><td class="${p==null?'warn':''}">${p==null?(t.calibrated&&usedS(i)?'skipped':'--'):p+'%'}</td>
     <td>${fmt(A.noise_sd&&A.noise_sd[i],1)}</td><td>${A.spikes_recent?A.spikes_recent[i]:'--'}</td><td>${A.drift_counts_per_h&&A.drift_counts_per_h[i]!=null?A.drift_counts_per_h[i]:'--'}</td></tr>`}
   $('sens').innerHTML=rows;calRender();
   const an=S.analysis;let h='';

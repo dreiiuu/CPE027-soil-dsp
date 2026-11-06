@@ -1,7 +1,7 @@
 """Parser for the ESP32-S3 serial protocol (firmware/smart_irrigation/smart_irrigation.ino, protocol v1).
 
 Firmware v2.0+ keeps "v":1 and only adds fields (paused, test_input, dry_ref, wet_ref; v2.1 status;
-v2.3 relay_test_active, relay_output_commanded; v2.5 sensors_used). They are
+v2.3 relay_test_active, relay_output_commanded; v2.5 sensors_used; v2.7 sensor_ok). They are
 optional here, so logs from firmware v1.0 still parse.
 
 The firmware prints, at 115200 baud:
@@ -54,15 +54,16 @@ def command_line(cmd: str, values=None, used=None) -> str:
     if cmd == "CAL":
         if len(vals) != 6:
             raise ValueError("CAL needs 6 values: dry1 dry2 dry3 wet1 wet2 wet3")
-        for i in range(3):
-            if used is not None and not used[i]:
-                continue
+        # firmware v2.7 stores every valid pair and skips the others (they keep their old
+        # references); it rejects the line only when no deciding sensor has a valid pair.
+        def ok(i):
             d, w = vals[i], vals[i + 3]
-            for v in (d, w):
-                if not ADC_BAD_LOW < v < ADC_BAD_HIGH:
-                    raise ValueError(f"S{i + 1}: {v} is at the ADC rail (needs {ADC_BAD_LOW + 1}-{ADC_BAD_HIGH - 1})")
-            if abs(d - w) < MIN_CALIBRATION_SPAN_ADC:
-                raise ValueError(f"S{i + 1}: dry {d} and wet {w} are only {abs(d - w)} counts apart (need {MIN_CALIBRATION_SPAN_ADC})")
+            return (ADC_BAD_LOW < d < ADC_BAD_HIGH and ADC_BAD_LOW < w < ADC_BAD_HIGH
+                    and abs(d - w) >= MIN_CALIBRATION_SPAN_ADC)
+        deciding = [i for i in range(3) if used is None or used[i]]
+        if not any(ok(i) for i in deciding):
+            raise ValueError("no sensor has a valid dry/wet pair: values must be "
+                             f"{ADC_BAD_LOW + 1}-{ADC_BAD_HIGH - 1} and at least {MIN_CALIBRATION_SPAN_ADC} counts apart")
         return "$CAL " + " ".join(map(str, vals)) + "\n"
     if cmd == "RAW":
         if len(vals) != 3 or not all(0 <= v <= 4095 for v in vals):
@@ -97,12 +98,13 @@ class Telemetry:
     wet_ref: Optional[list] = None
     status: Optional[str] = None  # "DRY" / "WET"; not sent while uncalibrated or faulted
     sensors_used: Optional[list] = None  # v2.5: which sensors the board uses, e.g. [True, False, True]
+    sensor_ok: Optional[list] = None     # v2.7: which sensors give a usable % right now (others are skipped)
     extra: dict = field(default_factory=dict)  # unknown keys from a newer firmware, kept for logging
 
     def to_dict(self) -> dict:
         d = {k: getattr(self, k) for k in ("v", "ms", "raw", "filtered_raw", "moisture_pct", "average_pct",
                                            *BOOL_FIELDS, "pulses", "relay_test_active", "relay_output_commanded", "paused",
-                                           "test_input", "dry_ref", "wet_ref", "sensors_used", "status")}
+                                           "test_input", "dry_ref", "wet_ref", "sensors_used", "sensor_ok", "status")}
         return d
 
 
@@ -176,11 +178,12 @@ def parse_line(line: str) -> Parsed:
         for k in ("dry_ref", "wet_ref"):
             if k in obj:
                 setattr(t, k, _triple(obj[k], k, 0, 4095, nullable=True))
-        if "sensors_used" in obj:
-            su = obj["sensors_used"]
-            if not (isinstance(su, list) and len(su) == 3 and all(isinstance(x, bool) for x in su)):
-                raise ValueError("sensors_used must be 3 true/false values")
-            t.sensors_used = su
+        for k in ("sensors_used", "sensor_ok"):
+            if k in obj:
+                su = obj[k]
+                if not (isinstance(su, list) and len(su) == 3 and all(isinstance(x, bool) for x in su)):
+                    raise ValueError(f"{k} must be 3 true/false values")
+                setattr(t, k, su)
         if "status" in obj:
             if obj["status"] not in ("DRY", "WET"):
                 raise ValueError("status must be DRY or WET")
@@ -189,7 +192,7 @@ def parse_line(line: str) -> Parsed:
         return Parsed("bad", text=line, error=str(e))
     known = {"type", "v", "ms", "raw", "filtered_raw", "moisture_pct", "average_pct", "pulses", *BOOL_FIELDS,
              "paused", "test_input", "dry_ref", "wet_ref", "status", "relay_test_active", "relay_output_commanded",
-             "sensors_used"}
+             "sensors_used", "sensor_ok"}
     t.extra = {k: v for k, v in obj.items() if k not in known}
     return Parsed("telemetry", telemetry=t, text=line)
 
@@ -215,4 +218,6 @@ def format_telemetry(t: Telemetry) -> str:
         b(t.paused), b(t.test_input), arr(t.dry_ref), arr(t.wet_ref))
     if t.sensors_used is not None:             # firmware v2.5, before "status"
         line = line[:-1] + ',"sensors_used":[%s]}' % ','.join(b(x) for x in t.sensors_used)
+    if t.sensor_ok is not None:                # firmware v2.7, after "sensors_used"
+        line = line[:-1] + ',"sensor_ok":[%s]}' % ','.join(b(x) for x in t.sensor_ok)
     return line if t.status is None else line[:-1] + ',"status":"%s"}' % t.status

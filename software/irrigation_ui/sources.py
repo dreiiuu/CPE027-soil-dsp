@@ -204,20 +204,24 @@ class FirmwareModel:
         self.ma_buf[i] = (self.ma_buf[i] + [w[len(w) // 2]])[-self.MA_POINTS:]
         return _f32(sum(self.ma_buf[i]) / len(self.ma_buf[i]))
 
-    def cal_valid(self):
-        return all(self.dry[i] >= 0 and self.wet[i] >= 0 and abs(self.dry[i] - self.wet[i]) >= self.MIN_CALIBRATION_SPAN_ADC
-                   for i in range(3))
+    def refs_ok(self, i):
+        return self.dry[i] >= 0 and self.wet[i] >= 0 and abs(self.dry[i] - self.wet[i]) >= self.MIN_CALIBRATION_SPAN_ADC
 
-    def pct(self, i):
-        if not self.cal_valid() or self.fault:
+    def bad(self, i):
+        return self.raw[i] <= self.ADC_BAD_LOW or self.raw[i] >= self.ADC_BAD_HIGH
+
+    def cal_valid(self):          # firmware v2.7: at least one sensor calibrated
+        return any(self.refs_ok(i) for i in range(3))
+
+    def pct(self, i):             # v2.7: a faulty / uncalibrated sensor is skipped, not fatal
+        if not self.refs_ok(i) or self.bad(i):
             return -1
         p = 100.0 * (self.filt[i] - self.dry[i]) / float(self.wet[i] - self.dry[i])
         return max(0, min(100, int(_c_lround(p))))
 
     def avg(self):
-        if not self.cal_valid() or self.fault:
-            return -1
-        return int(_c_lround((self.pct(0) + self.pct(1) + self.pct(2)) / 3.0))
+        ps = [p for p in (self.pct(i) for i in range(3)) if p >= 0]
+        return int(_c_lround(sum(ps) / float(len(ps)))) if ps else -1
 
     def update_status(self):
         p = self.avg()
@@ -231,7 +235,7 @@ class FirmwareModel:
             self.soil_dry = False
 
     def auto_allowed(self):
-        return (self.AUTO_START_AFTER_CALIBRATION and self.hw and self.cal_valid() and not self.fault
+        return (self.AUTO_START_AFTER_CALIBRATION and self.hw and self.cal_valid()
                 and not self.paused and not self.lockout)
 
     def print_cal(self):
@@ -271,20 +275,17 @@ class FirmwareModel:
         self.store_cal(measured if dry else None, None if dry else measured)
 
     def control(self):
-        if self.fault:
-            if self.auto:
-                self.emit("#EVENT auto_stopped_sensor_fault")
-            self.auto = self.demand = False
-            self.set_pump(False)
-            if self.cal_valid():
-                self.set_paused(True, "sensor_fault")
-            return
         if not self.cal_valid():
             self.auto = self.demand = False
             if not self.manual:
                 self.set_pump(False)
             return
         p = self.avg()
+        if p < 0:                 # no usable sensor: pump off, nothing paused (v2.7)
+            self.demand = False
+            if not self.manual:
+                self.set_pump(False)
+            return
         if p < self.START_WATERING_PCT:
             self.demand = True
         if p >= self.STOP_WATERING_PCT:
@@ -311,7 +312,7 @@ class FirmwareModel:
             self.pulses += 1
 
     def update_led(self):
-        self.led = self.led_test or (self.fault and (self.ms // 400) % 2 == 0) or (self.cal_valid() and self.demand)
+        self.led = self.led_test or (self.cal_valid() and self.avg() < 0 and (self.ms // 400) % 2 == 0) or (self.cal_valid() and self.demand)
 
     def telemetry(self) -> Telemetry:
         pcts = [self.pct(i) for i in range(3)]
@@ -323,6 +324,7 @@ class FirmwareModel:
                          pump_commanded=self.pump, led_on=self.led, auto_mode=self.auto, lockout=self.lockout,
                          pulses=self.pulses, hardware_verified=self.hw, paused=self.paused, test_input=self.test,
                          dry_ref=ref(self.dry), wet_ref=ref(self.wet),
+                         sensors_used=[True, True, True], sensor_ok=[p >= 0 for p in pcts],
                          status=("DRY" if self.soil_dry else "WET") if self.status_known else None)
 
     def end_test(self, why):
@@ -393,8 +395,8 @@ class FirmwareModel:
                 self.emit("#EVENT auto_denied_lockout_send_X_then_review")
             elif not self.cal_valid():
                 self.emit("#EVENT auto_denied_calibrate_D_then_W")
-            elif self.fault:
-                self.emit("#EVENT auto_denied_sensor_fault")
+            elif self.avg() < 0:
+                self.emit("#EVENT auto_denied_no_usable_sensor")
             elif self.pump:
                 self.emit("#EVENT auto_denied_pump_busy")
             else:
@@ -402,7 +404,7 @@ class FirmwareModel:
                 self.auto, self.demand, self.pulses = True, False, 0
                 self.emit("#EVENT auto_enabled")
         elif c == "T":
-            if not self.hw or self.fault or self.auto or self.lockout or self.pump:
+            if not self.hw or self.auto or self.lockout or self.pump:
                 self.emit("#EVENT manual_pump_test_denied")
             else:
                 self.manual = True
